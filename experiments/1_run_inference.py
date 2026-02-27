@@ -105,7 +105,7 @@ def run_inference(model, dataset, sample_indices, output_dir,
             # 检查生成的答案
             generated_text = result['generated_text']
             # 提取选项字母 (A, B, C, D)
-            answer_pred = None
+            answer_pred = ""
 
             # 优先从JSON格式提取答案: {"answer": "X"}
             import re
@@ -113,11 +113,8 @@ def run_inference(model, dataset, sample_indices, output_dir,
             if json_match:
                 answer_pred = json_match.group(1).upper()
             else:
-                # 如果没有JSON格式，回退到简单匹配
-                for opt in ['A', 'B', 'C', 'D']:
-                    if opt in generated_text.upper()[:20]:
-                        answer_pred = opt
-                        break
+                # 如果没有JSON格式，则认为回答有误，保持空字符
+                pass
 
             sample_id = str(sample['id'])
             # 清理sample_id中的非法文件名字符
@@ -129,7 +126,6 @@ def run_inference(model, dataset, sample_indices, output_dir,
             meta = {
                 'sample_id': sample_id,
                 'idx': idx,
-                'model_name': 'Qwen3-VL-2B-Instruct',
                 'question': sample['question'],
                 'options': sample['options'],
                 'raw_question': result.get('raw_question', ''),  # 问题+选项+JSON格式指令
@@ -137,7 +133,7 @@ def run_inference(model, dataset, sample_indices, output_dir,
                 'ground_truth': sample['answer'],
                 'predicted_answer': answer_pred,
                 'generated_text': generated_text,
-                'correct': answer_pred == sample['answer'],
+                'correct': answer_pred in sample['answer'],
                 'heva': float(result['heva']),
                 'attention_validated': is_normalized,
                 'prompt_token_num': result['prompt_length'],
@@ -205,6 +201,23 @@ def run_inference(model, dataset, sample_indices, output_dir,
     return results, errors
 
 
+def set_seed(seed: int):
+    """设置全局随机种子以保证可复现性"""
+    import random
+    import numpy as np
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    # PyTorch 2.0+ 需要设置以下选项来保证确定性
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    print(f"Random seed set to: {seed}")
+
+
 def main():
     import config
     from data.loader import SUPPORTED_DATASETS
@@ -217,8 +230,10 @@ def main():
                        choices=SUPPORTED_DATASETS, help='Dataset name')
 
     # 采样配置
-    parser.add_argument('--num_samples', type=int, default=50, help='Number of samples to process')
-    parser.add_argument('--start_idx', type=int, default=0, help='Start index')
+    parser.add_argument('--num_samples', type=int, default=-1, help='Number of samples to process (-1 for all)')
+    parser.add_argument('--shuffle', type=str, default='false', choices=['true', 'false'], help='Shuffle dataset before processing')
+    parser.add_argument('--batch_size', type=int, default=1, help='Batch size for inference')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
 
     # 模型超参数
     parser.add_argument('--max_new_tokens', type=int, default=8192, help='Max new tokens for generation')
@@ -233,7 +248,13 @@ def main():
     # 输出配置
     parser.add_argument('--output_dir', type=str, default=None, help='Output directory')
 
+    # 模型配置
+    parser.add_argument('--model_path', type=str, default=None, help='Model path (default: from config.py)')
+
     args = parser.parse_args()
+
+    # 设置随机种子
+    set_seed(args.seed)
 
     # 设置默认输出目录: results/{exp_name}/{dataset}/
     if args.output_dir is None:
@@ -243,13 +264,17 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     # 保存实验配置到 config.json
+    # 使用自定义模型路径或默认路径
+    model_path = args.model_path if args.model_path else config.MODEL_DIR
     exp_config = {
         'exp_name': args.exp_name,
         'dataset': args.dataset,
-        'model_name': 'Qwen3-VL-2B-Instruct',
-        'model_path': config.MODEL_DIR,
+        'model_name': model_path.split("/")[-1],
+        'model_path': model_path,
         'num_samples': args.num_samples,
-        'start_idx': args.start_idx,
+        'shuffle': args.shuffle,
+        'batch_size': args.batch_size,
+        'seed': args.seed,
         'max_new_tokens': args.max_new_tokens,
         'temperature': args.temperature,
         'top_p': args.top_p,
@@ -264,17 +289,27 @@ def main():
 
     # 加载模型和数据
     print("Loading model...")
-    model = load_model()
+    model = load_model(model_path=args.model_path)
 
     print(f"Loading dataset: {args.dataset}...")
     dataset = load_dataset(args.dataset)
     print(f"Dataset size: {len(dataset)}")
 
     # 确定样本索引
-    end_idx = min(args.start_idx + args.num_samples, len(dataset))
-    sample_indices = list(range(args.start_idx, end_idx))
+    # -1 表示处理全部样本
+    if args.num_samples == -1:
+        end_idx = len(dataset)
+    else:
+        end_idx = min(args.num_samples, len(dataset))
+    sample_indices = list(range(0, end_idx))
 
-    print(f"Processing samples {args.start_idx} to {end_idx} ({len(sample_indices)} samples)")
+    # 可选：shuffle 数据集
+    if args.shuffle.lower() == 'true':
+        import random
+        random.seed(42)  # 固定随机种子保证可复现
+        random.shuffle(sample_indices)
+
+    print(f"Processing samples 0 to {end_idx} ({len(sample_indices)} samples)")
     print(f"Output directory: {args.output_dir}")
     print(f"Hyperparameters: max_new_tokens={args.max_new_tokens}, temperature={args.temperature}, top_p={args.top_p}, top_k={args.top_k}")
 

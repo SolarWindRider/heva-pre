@@ -168,7 +168,7 @@ class Qwen3VLInference:
 
         # 准备消息 (包含system message)
         messages = [
-            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "system", "content": "You are good at step by step reasoning."},
             {
                 "role": "user",
                 "content": [
@@ -367,13 +367,31 @@ class Qwen3VLInference:
         }
 
 
-def load_model(model_path: str = None, device: str = None) -> Qwen3VLInference:
-    """加载模型的便捷函数"""
+# 全局模型缓存，避免每次都重新加载
+_model_cache = {}
+
+
+def load_model(model_path: str = None, device: str = None, reuse: bool = True) -> Qwen3VLInference:
+    """加载模型的便捷函数，支持缓存复用"""
     import config
     if model_path is None:
         model_path = config.MODEL_DIR
 
-    return Qwen3VLInference(model_path, device)
+    # 如果启用缓存且模型已加载，直接返回缓存的模型
+    cache_key = f"{model_path}_{device}"
+    if reuse and cache_key in _model_cache:
+        print(f"Reusing cached model: {model_path}")
+        return _model_cache[cache_key]
+
+    # 加载新模型
+    model = Qwen3VLInference(model_path, device)
+
+    # 缓存模型
+    if reuse:
+        _model_cache[cache_key] = model
+        print(f"Model cached: {model_path}")
+
+    return model
 
 
 if __name__ == "__main__":
