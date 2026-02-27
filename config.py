@@ -22,6 +22,9 @@ RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
 PLOTS_DIR = os.path.join(PROJECT_ROOT, "plots")
 TABLES_DIR = os.path.join(PROJECT_ROOT, "tables")
 
+# 默认实验名称 (可自定义)
+DEFAULT_EXP_NAME = "exp001"
+
 # 创建目录
 os.makedirs(RESULTS_DIR, exist_ok=True)
 os.makedirs(PLOTS_DIR, exist_ok=True)

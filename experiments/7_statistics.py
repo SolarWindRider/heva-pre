@@ -2,6 +2,7 @@
 统计分析脚本
 
 对实验结果进行统计分析并生成表格和图表
+支持多个数据集的独立分析
 """
 
 import argparse
@@ -24,11 +25,97 @@ from analysis.plots import (
 )
 
 
-def load_inference_results(path):
-    """加载推理结果"""
-    with open(path, 'rb') as f:
-        data = pickle.load(f)
-    return data['results']
+# 数据集列表
+SUPPORTED_DATASETS = ["VisuRiddles", "RAVEN", "MARVEL", "LogicVista", "PuzzleVQA", "AlgoPuzzleVQA"]
+
+
+def load_inference_results(dataset_dir):
+    """
+    加载推理结果
+
+    支持两种格式:
+    1. 新格式: results/{dataset}/index.json + {sample_id}_meta.json
+    2. 旧格式: results/inference_{dataset}.pkl (兼容)
+    """
+    index_path = os.path.join(dataset_dir, 'index.json')
+
+    # 尝试新格式
+    if os.path.exists(index_path):
+        with open(index_path, 'r') as f:
+            index_data = json.load(f)
+
+        results = []
+        for item in index_data.get('results', []):
+            meta_path = item['meta_path']
+            if os.path.exists(meta_path):
+                with open(meta_path, 'r', encoding='utf-8') as f:
+                    meta = json.load(f)
+                # 加载tensor数据路径
+                meta['tensor_path'] = item['tensor_path']
+                results.append(meta)
+            else:
+                print(f"Warning: Meta file not found: {meta_path}")
+
+        return results, index_data.get('errors', [])
+
+    # 尝试旧格式兼容
+    pkl_path = dataset_dir.replace('results/', 'results/inference_') + '.pkl'
+    if not dataset_dir.endswith('.pkl'):
+        pkl_path = dataset_dir + '.pkl'
+    if os.path.exists(pkl_path):
+        with open(pkl_path, 'rb') as f:
+            data = pickle.load(f)
+        return data['results'], data.get('errors', [])
+
+    raise FileNotFoundError(f"Cannot find results in {dataset_dir}")
+
+
+def analyze_single_dataset(results, dataset_name):
+    """分析单个数据集的结果"""
+    print("\n" + "="*60)
+    print(f"Dataset: {dataset_name}")
+    print("="*60)
+
+    # 新格式: results是metadata列表
+    df = pd.DataFrame(results)
+
+    stats = {
+        'dataset': dataset_name,
+        'num_samples': len(results),
+    }
+
+    print(f"\nTotal samples: {len(results)}")
+
+    # 计算准确率 - 兼容新旧格式
+    if 'correct' in df.columns:
+        # 新格式: correct是布尔值
+        accuracy = df['correct'].mean()
+    elif 'accuracy' in df.columns:
+        # 旧格式
+        accuracy = df['accuracy'].mean()
+    else:
+        accuracy = 0.0
+    stats['accuracy'] = accuracy
+    print(f"Accuracy: {accuracy:.2%}")
+
+    # HEVA 统计
+    mean_heva = df['heva'].mean()
+    std_heva = df['heva'].std()
+    stats['mean_heva'] = mean_heva
+    stats['std_heva'] = std_heva
+
+    print(f"\nHEVA Statistics:")
+    print(f"  Mean: {mean_heva:.4f}")
+    print(f"  Std: {std_heva:.4f}")
+
+    # 详细统计
+    heva_values = df['heva'].values
+    detailed_stats = compute_summary_statistics(heva_values)
+    for k, v in detailed_stats.items():
+        stats[f'heva_{k}'] = v
+        print(f"  {k}: {v:.4f}")
+
+    return stats
 
 
 def analyze_perturbation_results(results):
@@ -119,7 +206,7 @@ def analyze_group_results(results):
     }
 
 
-def generate_plots(results, output_dir):
+def generate_plots(results, output_dir, dataset_name):
     """生成图表"""
     os.makedirs(output_dir, exist_ok=True)
 
@@ -128,8 +215,8 @@ def generate_plots(results, output_dir):
     # HEVA 分布
     plot_heva_distribution(
         df['heva'].values,
-        title="HEVA Distribution",
-        save_path=os.path.join(output_dir, 'heva_distribution.png')
+        title=f"HEVA Distribution - {dataset_name}",
+        save_path=os.path.join(output_dir, f'heva_distribution_{dataset_name}.png')
     )
 
     # 分组对比
@@ -142,50 +229,119 @@ def generate_plots(results, output_dir):
                 visual_heva, language_heva,
                 group1_name="Visual-Critical",
                 group2_name="Language-Guessable",
-                save_path=os.path.join(output_dir, 'group_comparison.png')
+                save_path=os.path.join(output_dir, f'group_comparison_{dataset_name}.png')
             )
 
     # 扰动对比
     if 'condition' in df.columns:
         plot_heva_perturbation(
             results,
-            save_path=os.path.join(output_dir, 'perturbation_comparison.png')
+            save_path=os.path.join(output_dir, f'perturbation_comparison_{dataset_name}.png')
         )
 
 
 def main():
     import config
     parser = argparse.ArgumentParser(description='Analyze experiment results')
+    parser.add_argument('--exp_name', type=str, default=config.DEFAULT_EXP_NAME,
+                       help='Experiment name (default: exp001)')
     parser.add_argument('--results_dir', type=str, default=config.RESULTS_DIR,
                         help='Results directory')
     parser.add_argument('--output_dir', type=str, default=config.PLOTS_DIR,
                         help='Output directory for plots')
+    parser.add_argument('--dataset', type=str, default=None,
+                       help='Specific dataset to analyze (e.g., VisuRiddles)')
+    parser.add_argument('--all', action='store_true',
+                       help='Analyze all available datasets')
 
     args = parser.parse_args()
 
-    # 分析推理结果
-    inference_path = os.path.join(args.results_dir, 'inference_results.pkl')
-    if os.path.exists(inference_path):
-        print("Analyzing inference results...")
-        results = load_inference_results(inference_path)
-        df = pd.DataFrame(results)
+    # 实验结果目录: results/{exp_name}/
+    exp_dir = os.path.join(args.results_dir, args.exp_name)
 
-        print("\n" + "="*50)
-        print("Inference Results Summary")
-        print("="*50)
-        print(f"Total samples: {len(results)}")
-        print(f"Mean HEVA: {df['heva'].mean():.4f}")
-        print(f"Std HEVA: {df['heva'].std():.4f}")
-        print(f"Accuracy: {df['correct'].mean():.2%}")
+    all_stats = []
 
-        # HEVA 分布统计
-        print("\nHEVA Statistics:")
-        stats = compute_summary_statistics(df['heva'].values)
-        for k, v in stats.items():
-            print(f"  {k}: {v:.4f}")
+    # 分析指定数据集或所有数据集
+    datasets_to_analyze = []
 
-        # 生成图表
-        generate_plots(results, args.output_dir)
+    if args.all:
+        datasets_to_analyze = SUPPORTED_DATASETS
+    elif args.dataset:
+        datasets_to_analyze = [args.dataset]
+    else:
+        # 自动检测已有的结果文件夹 (新格式: results/{exp_name}/{dataset}/)
+        for ds in SUPPORTED_DATASETS:
+            dataset_dir = os.path.join(exp_dir, ds)
+            index_path = os.path.join(dataset_dir, 'index.json')
+            # 兼容旧格式
+            old_path = os.path.join(args.results_dir, f'inference_{ds}.pkl')
+            if os.path.exists(index_path) or os.path.exists(old_path):
+                datasets_to_analyze.append(ds)
+
+    for dataset_name in datasets_to_analyze:
+        # 新格式目录: results/{exp_name}/{dataset}/
+        dataset_dir = os.path.join(exp_dir, dataset_name)
+        index_path = os.path.join(dataset_dir, 'index.json')
+        # 兼容旧格式
+        old_path = os.path.join(args.results_dir, f'inference_{dataset_name}.pkl')
+
+        # 先尝试新格式，再尝试旧格式
+        if not os.path.exists(index_path) and os.path.exists(old_path):
+            # 旧格式兼容：results/inference_{dataset}.pkl -> 映射到新目录
+            dataset_dir = os.path.join(args.results_dir, dataset_name)
+            index_path = os.path.join(dataset_dir, 'index.json')
+
+        result_exists = os.path.exists(index_path) or os.path.exists(old_path)
+
+        if result_exists:
+            print(f"\n{'='*60}")
+            print(f"Analyzing: {dataset_name}")
+            print('='*60)
+
+            try:
+                results, errors = load_inference_results(dataset_dir)
+                print(f"Loaded {len(results)} results, {len(errors)} errors")
+                stats = analyze_single_dataset(results, dataset_name)
+                all_stats.append(stats)
+
+                # 生成图表
+                generate_plots(results, args.output_dir, dataset_name)
+
+                # 保存单个数据集的统计结果
+                stats_path = os.path.join(dataset_dir, 'stats.json')
+                with open(stats_path, 'w') as f:
+                    # 转换 numpy 类型为 Python 类型
+                    stats_json = {}
+                    for k, v in stats.items():
+                        if isinstance(v, (np.integer, np.floating)):
+                            stats_json[k] = float(v)
+                        else:
+                            stats_json[k] = v
+                    json.dump(stats_json, f, indent=2)
+                print(f"Stats saved to: {stats_path}")
+
+            except Exception as e:
+                print(f"Error analyzing {dataset_name}: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print(f"Result not found for: {dataset_name}")
+
+    # 保存汇总统计
+    if all_stats:
+        summary_path = os.path.join(args.results_dir, 'all_datasets_summary.json')
+        with open(summary_path, 'w') as f:
+            json.dump(all_stats, f, indent=2)
+        print(f"\n{'='*60}")
+        print(f"Summary saved to: {summary_path}")
+
+        # 打印汇总表格
+        print(f"\n{'='*60}")
+        print("ALL DATASETS SUMMARY")
+        print('='*60)
+
+        summary_df = pd.DataFrame(all_stats)
+        print(summary_df.to_string(index=False))
 
     # 分析分组结果
     group_path = os.path.join(args.results_dir, 'group_analysis.pkl')

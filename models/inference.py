@@ -1,12 +1,31 @@
 """
 HEVA 模型推理模块
 支持 Qwen3-VL 推理并捕获 attention 和 logits
+支持 NVIDIA GPU 和华为 NPU
 """
 
 import torch
 from transformers import AutoModelForVision2Seq, AutoProcessor
 from typing import Dict, Any, Tuple, Optional
 import torch.nn.functional as F
+
+# 检测设备类型
+def get_device():
+    """自动检测并返回可用设备"""
+    # 优先使用 NPU (华为昇腾)
+    try:
+        import torch_npu
+        if hasattr(torch, 'npu') and torch.npu.is_available():
+            return "npu"
+    except ImportError:
+        pass
+
+    # 其次使用 CUDA
+    if torch.cuda.is_available():
+        return "cuda"
+
+    # 最后使用 CPU
+    return "cpu"
 
 
 class Qwen3VLInference:
@@ -16,20 +35,26 @@ class Qwen3VLInference:
         """
         Args:
             model_path: 模型路径
-            device: 设备，默认为 cuda
+            device: 设备，默认为自动检测
         """
-        # 强制使用 cuda/npu，因为模型在 GPU 上
-        if torch.cuda.is_available():
-            self.device = "cuda"
-        else:
-            self.device = "cpu"
+        self.device = device or get_device()
         self.model_path = model_path
 
         print(f"Loading model from {model_path}...")
+        print(f"Using device: {self.device}")
+
+        # 根据设备类型设置 device_map
+        if self.device == "npu":
+            device_map = "npu"
+        elif self.device == "cuda":
+            device_map = "cuda"
+        else:
+            device_map = "cpu"
+
         self.model = AutoModelForVision2Seq.from_pretrained(
             model_path,
             torch_dtype=torch.bfloat16,
-            device_map=self.device,
+            device_map=device_map,
             trust_remote_code=True
         )
         # 设置使用 eager attention 以支持 attention 输出
@@ -37,7 +62,13 @@ class Qwen3VLInference:
             self.model.config.attn_implementation = "eager"
         if hasattr(self.model, 'set_attn_implementation'):
             self.model.set_attn_implementation("eager")
-        self.model = self.model.to(self.device)
+
+        if self.device != "cpu" and device_map != "auto":
+            self.model = self.model.to(self.device)
+
+        self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+
+        print(f"Model loaded on {self.device}")
 
         self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
 
@@ -97,8 +128,13 @@ class Qwen3VLInference:
         self,
         image: Any,
         question: str,
+        options: str = "",
         max_new_tokens: int = 256,
         temperature: float = 0.7,
+        top_p: float = 0.9,
+        top_k: int = 50,
+        do_sample: bool = True,
+        image_size: int = 448,
     ) -> Dict[str, Any]:
         """
         带 attention 的生成
@@ -106,8 +142,13 @@ class Qwen3VLInference:
         Args:
             image: PIL Image
             question: 问题文本
+            options: 选项文本
             max_new_tokens: 最大生成长度
             temperature: 温度
+            top_p: top-p 采样
+            top_k: top-k 采样
+            do_sample: 是否采样
+            image_size: 图像处理大小
 
         Returns:
             {
@@ -118,15 +159,21 @@ class Qwen3VLInference:
                 "input_ids": torch.Tensor,
                 "visual_token_indices": torch.Tensor,
                 "gen_token_indices": torch.Tensor,
+                "prompt": str,  # 完整的prompt
             }
         """
-        # 准备消息
+        # 构建prompt，参考用户提供的格式
+        option_str = f"option: {options}\n" if options else ""
+        full_question = question + option_str + 'Write the answer into a JSON form\n```json\n{"answer": "X"}```'
+
+        # 准备消息 (包含system message)
         messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
             {
                 "role": "user",
                 "content": [
-                    {"type": "image"},
-                    {"type": "text", "text": question}
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": full_question}
                 ]
             }
         ]
@@ -135,6 +182,7 @@ class Qwen3VLInference:
         text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
         # 处理输入
+        # 先不使用size参数，让processor自动处理图像
         inputs = self.processor(
             text=[text],
             images=[image],
@@ -172,7 +220,7 @@ class Qwen3VLInference:
         else:
             prompt_length = len(input_ids[0])
 
-        # 生成 - 先不使用 output_attentions，加快速度
+        # 生成
         with torch.no_grad():
             output = self.model.generate(
                 input_ids,
@@ -181,21 +229,25 @@ class Qwen3VLInference:
                 image_grid_thw=image_grid_thw,
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
-                do_sample=True,
+                top_p=top_p,
+                top_k=top_k,
+                do_sample=do_sample,
                 return_dict_in_generate=True,
             )
 
         # 提取结果
         # output.sequences 包含输入 + 输出
-        # 输出部分从 len(input_ids) 开始
+        # 使用 prompt_length 而不是 input_len 来切片，因为 prompt_length 是用户消息结束的位置
         generated_ids = output.sequences[0]
-        input_len = len(input_ids[0])
-        gen_ids = generated_ids[input_len:]  # 只取新生成的 token
+        gen_ids = generated_ids[prompt_length:]  # 从用户消息结束后开始取
 
+        # 先不用 skip_special_tokens，获取完整输出
         generated_text = self.processor.batch_decode(
-            gen_ids,
-            skip_special_tokens=True
+            gen_ids.unsqueeze(0) if gen_ids.dim() == 1 else gen_ids,
+            skip_special_tokens=False
         )[0]
+        # 只清理特殊token，保留markdown格式
+        generated_text = generated_text.replace('<|im_end|>', '').replace('<|endoftext|>', '').strip()
 
         # 使用 forward_with_attention 获取 attention 和 logits
         # 将生成的 token 加入输入，重新前向传播获取 attention
@@ -219,14 +271,40 @@ class Qwen3VLInference:
             attentions = None
             logits = None
 
+        # 计算 HEVA
+        heva_value = 0.0
+        if logits is not None and attentions is not None:
+            try:
+                # 延迟导入避免循环依赖
+                import sys
+                if 'metrics.heva' in sys.modules:
+                    from metrics.heva import compute_heva_from_result
+                else:
+                    from metrics.heva import compute_heva_from_result
+
+                heva_result = compute_heva_from_result({
+                    "logits": logits,
+                    "attentions": attentions,
+                    "visual_token_indices": visual_token_indices,
+                    "prompt_length": prompt_length,
+                    "input_ids": input_ids[0],
+                }, alpha=0.2)
+                heva_value = heva_result['heva']
+            except Exception as e:
+                print(f"Warning: Failed to compute HEVA: {e}")
+
         return {
             "generated_text": generated_text,
             "generated_ids": generated_ids,
             "logits": logits[0] if logits is not None else None,
             "attentions": attentions,
             "input_ids": input_ids[0],
+            "generated_ids": generated_ids,  # 完整的生成序列
             "visual_token_indices": visual_token_indices,
             "prompt_length": prompt_length,
+            "heva": heva_value,
+            "prompt": text,  # 完整的prompt字符串
+            "raw_question": full_question,  # 原始问题+选项+格式要求
         }
 
     def forward_with_attention(
