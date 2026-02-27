@@ -70,6 +70,7 @@ def run_inference(model, dataset, sample_indices, output_path, max_new_tokens=12
                 'ground_truth': sample['answer'],
                 'generated_text': generated_text,
                 'predicted_answer': answer_pred,
+                'correct': answer_pred == sample['answer'],
                 'heva': result['heva'],
                 'attention_validated': is_normalized,
                 # 保存关键数据用于后续分析

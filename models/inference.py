@@ -4,7 +4,7 @@ HEVA 模型推理模块
 """
 
 import torch
-from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+from transformers import AutoModelForVision2Seq, AutoProcessor
 from typing import Dict, Any, Tuple, Optional
 import torch.nn.functional as F
 
@@ -18,17 +18,28 @@ class Qwen3VLInference:
             model_path: 模型路径
             device: 设备，默认为 cuda
         """
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        # 强制使用 cuda/npu，因为模型在 GPU 上
+        if torch.cuda.is_available():
+            self.device = "cuda"
+        else:
+            self.device = "cpu"
         self.model_path = model_path
 
         print(f"Loading model from {model_path}...")
-        self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+        self.model = AutoModelForVision2Seq.from_pretrained(
             model_path,
             torch_dtype=torch.bfloat16,
-            device_map="auto",
-            attn_implementation="eager"  # 需要 eager 来获取 attention
+            device_map=self.device,
+            trust_remote_code=True
         )
-        self.processor = AutoProcessor.from_pretrained(model_path)
+        # 设置使用 eager attention 以支持 attention 输出
+        if hasattr(self.model, 'config'):
+            self.model.config.attn_implementation = "eager"
+        if hasattr(self.model, 'set_attn_implementation'):
+            self.model.set_attn_implementation("eager")
+        self.model = self.model.to(self.device)
+
+        self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
 
         print(f"Model loaded on {self.device}")
 
@@ -135,56 +146,83 @@ class Qwen3VLInference:
         input_ids = inputs["input_ids"].to(self.device)
         attention_mask = inputs["attention_mask"].to(self.device)
         pixel_values = inputs["pixel_values"].to(self.device)
+        # 获取 image_grid_thw 用于视觉编码
+        image_grid_thw = inputs.get("image_grid_thw", None)
+        if image_grid_thw is not None:
+            image_grid_thw = image_grid_thw.to(self.device)
 
         # 获取视觉 token 索引
         # 在 Qwen3-VL 中，图像 token 在 input_ids 中是连续的
         visual_token_indices = self.get_visual_token_indices(input_ids[0])
 
-        # 计算 prompt 长度（不包括图像 token）
-        # 找到最后一个非图像 token 的位置
+        # 计算 prompt 长度
+        # 找到最后一个非图像 token 的位置，然后找到 user message 结束位置
+        # Qwen3-VL 使用 <|im_end|> 作为消息结束符
         if len(visual_token_indices) > 0:
-            prompt_length = int(visual_token_indices[0].item())
+            # 找到图像 token 结束后的位置
+            img_end = int(visual_token_indices[-1].item()) + 1
+            # 从这里继续找 <|im_end|> 标记
+            input_ids_list = input_ids[0].tolist()
+            try:
+                # 找到 <|im_end|> (151645) 的位置
+                prompt_length = input_ids_list.index(151645, img_end) + 1
+            except ValueError:
+                # 如果找不到，使用图像 token 结束位置
+                prompt_length = img_end
         else:
             prompt_length = len(input_ids[0])
 
-        # 生成
+        # 生成 - 先不使用 output_attentions，加快速度
         with torch.no_grad():
             output = self.model.generate(
                 input_ids,
                 attention_mask=attention_mask,
                 pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
                 do_sample=True,
-                output_attentions=True,
                 return_dict_in_generate=True,
             )
 
         # 提取结果
+        # output.sequences 包含输入 + 输出
+        # 输出部分从 len(input_ids) 开始
         generated_ids = output.sequences[0]
+        input_len = len(input_ids[0])
+        gen_ids = generated_ids[input_len:]  # 只取新生成的 token
+
         generated_text = self.processor.batch_decode(
-            generated_ids[prompt_length:],
+            gen_ids,
             skip_special_tokens=True
         )[0]
 
-        # 获取 logits (需要重新前向传播获取)
-        # 由于 generate 不返回完整 logits，我们需要单独前向传播
-        # 这里简化处理，使用 generated token 的 logits
+        # 使用 forward_with_attention 获取 attention 和 logits
+        # 将生成的 token 加入输入，重新前向传播获取 attention
+        full_input_ids = generated_ids.unsqueeze(0)
+        full_attention_mask = torch.ones_like(full_input_ids)
 
-        # 获取最后一层的 attention
-        attentions = output.attentions  # Tuple of (batch, num_heads, seq_len, seq_len)
-
-        # 获取生成的 token 对应的 logits
-        # 这里的 logits 形状是 (seq_len, vocab_size)
-        if hasattr(output, 'logits'):
-            logits = output.logits[0]  # (seq_len, vocab_size)
-        else:
+        try:
+            with torch.no_grad():
+                outputs = self.model(
+                    input_ids=full_input_ids,
+                    attention_mask=full_attention_mask,
+                    pixel_values=pixel_values,
+                    image_grid_thw=image_grid_thw,
+                    output_attentions=True,
+                    return_dict=True,
+                )
+            attentions = outputs.attentions
+            logits = outputs.logits
+        except Exception as e:
+            print(f"Warning: Failed to get attentions: {e}")
+            attentions = None
             logits = None
 
         return {
             "generated_text": generated_text,
             "generated_ids": generated_ids,
-            "logits": logits,
+            "logits": logits[0] if logits is not None else None,
             "attentions": attentions,
             "input_ids": input_ids[0],
             "visual_token_indices": visual_token_indices,

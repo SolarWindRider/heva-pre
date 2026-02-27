@@ -23,6 +23,9 @@ def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
     Returns:
         entropy: (seq_len,) 或 (batch, seq_len)
     """
+    # 转换为 float 以避免 bfloat16 问题
+    logits = logits.to(torch.float32)
+
     if logits.dim() == 3:
         # (batch, seq_len, vocab_size) -> (batch, seq_len)
         probs = F.softmax(logits, dim=-1)
@@ -86,7 +89,7 @@ def compute_heva(
 
     # 4. 获取最后一层的 attention
     # attentions 是 Tuple[ (batch, num_heads, seq_len, seq_len) ]
-    attn = attentions[-1][0]  # (num_heads, seq_len, seq_len)
+    attn = attentions[-1][0].to(torch.float32)  # (num_heads, seq_len, seq_len)
     num_heads = attn.shape[0]
 
     # 5. 对每个高熵 token 计算视觉注意力
@@ -117,7 +120,7 @@ def compute_heva(
         "high_entropy_tokens": selected_tokens,
         "visual_attentions": visual_attentions,
         "entropies": entropies,
-        "selected_entropy_values": entropy_gen[top_indices].cpu().numpy()
+        "selected_entropy_values": entropy_gen[top_indices].float().cpu().numpy()
     }
 
 
