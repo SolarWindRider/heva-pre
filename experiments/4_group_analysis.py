@@ -3,27 +3,64 @@
 
 将样本分为 visual-critical 和 language-guessable 两组
 比较 HEVA 差异
+
+新格式：
+- results/{exp_name}/{dataset}/
+  - {sample_id}_meta.json (人类可读元数据)
+  - {sample_id}_tensor.pkl (tensor数据)
 """
 
 import argparse
 import json
 import os
+import torch
+import pickle
 import re
+from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from data.loader import load_dataset
+from data.loader import load_dataset, SUPPORTED_DATASETS
 from models.inference import load_model
 from metrics.heva import compute_heva_from_result, validate_attention_normalization
+
+
+# 异步保存tensor的线程池
+_executor = ThreadPoolExecutor(max_workers=4)
+
+
+def save_tensor_async(tensor_data, filepath):
+    """异步保存tensor数据"""
+    def _save():
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        with open(filepath, 'wb') as f:
+            pickle.dump(tensor_data, f)
+    _executor.submit(_save)
+
+
+def set_seed(seed: int):
+    """设置全局随机种子以保证可复现性"""
+    import random
+    import numpy as np
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    print(f"Random seed set to: {seed}")
 
 
 # 定义 visual-critical 关键词
 VISUAL_KEYWORDS = [
     'color', 'left', 'right', 'count', 'position', 'number',
     '颜色', '左', '右', '数量', '位置', '数字',
-    '多少', '几个', '哪个', '几个', '颜色'
+    '多少', '几个', '哪个', '颜色'
 ]
 
 
@@ -50,8 +87,12 @@ def run_group_analysis(
     model,
     dataset,
     sample_indices,
-    output_path,
-    max_new_tokens=128
+    output_dir,
+    max_new_tokens=8192,
+    temperature=0.7,
+    top_p=0.9,
+    top_k=50,
+    image_size=448,
 ):
     """
     运行分组分析
@@ -60,16 +101,17 @@ def run_group_analysis(
         model: 推理模型
         dataset: 数据集
         sample_indices: 样本索引
-        output_path: 输出路径
+        output_dir: 输出目录
         max_new_tokens: 最大生成长度
     """
+    os.makedirs(output_dir, exist_ok=True)
+
     results = []
     errors = []
 
     for idx in tqdm(sample_indices, desc="Running group analysis"):
         try:
             sample = dataset[idx]
-            question_with_options = sample['question'] + "\n" + sample['options']
 
             # 分类
             group = classify_sample(sample['question'])
@@ -77,101 +119,205 @@ def run_group_analysis(
             # 运行推理
             result = model.generate_with_attention(
                 image=sample['image'],
-                question=question_with_options,
+                question=sample['question'],
+                options=sample['options'],
                 max_new_tokens=max_new_tokens,
-                temperature=0.7,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                image_size=image_size,
             )
 
+            # 检查结果是否有效
+            if result is None:
+                print(f"Warning: Failed to get valid result for idx {idx}, skipping...")
+                continue
+
             # 验证 attention 归一化
-            is_normalized = validate_attention_normalization(result['attentions'])
+            is_normalized = False
+            if result.get('attentions') is not None:
+                is_normalized = validate_attention_normalization(result['attentions'])
 
             # 计算 HEVA
-            heva_result = compute_heva_from_result(result, alpha=0.2)
+            try:
+                heva_result = compute_heva_from_result(result, alpha=0.2)
+                result['heva'] = heva_result['heva']
+            except Exception as e:
+                print(f"Warning: Failed to compute HEVA for idx {idx}: {e}")
+                result['heva'] = 0.0
 
-            # 检查生成的答案
+            # 检查生成的答案 - 使用 JSON 格式提取
             generated_text = result['generated_text']
-            answer_pred = None
-            for opt in ['A', 'B', 'C', 'D']:
-                if opt in generated_text.upper()[:10]:
-                    answer_pred = opt
-                    break
+            answer_pred = ""
 
-            results.append({
-                'sample_id': sample['id'],
+            json_match = re.search(r'\{"answer":\s*"([^"]+)"\}', generated_text)
+            if json_match:
+                answer_pred = json_match.group(1).upper()
+
+            sample_id = str(sample['id']).replace('/', '_').replace('\\', '_').replace(':', '_')
+
+            # 计算 gen_token_num
+            gen_token_num = len(result['generated_ids']) - result['prompt_length']
+
+            # 保存元数据
+            meta = {
+                'sample_id': sample_id,
                 'idx': idx,
                 'group': group,
                 'question': sample['question'],
+                'options': sample['options'],
+                'prompt': result.get('prompt', ''),
                 'ground_truth': sample['answer'],
                 'predicted_answer': answer_pred,
-                'correct': answer_pred == sample['answer'],
-                'heva': heva_result['heva'],
+                'generated_text': generated_text,
+                'correct': answer_pred in sample['answer'],
+                'heva': float(result['heva']),
                 'attention_validated': is_normalized,
+                'prompt_token_num': result['prompt_length'],
+                'gen_token_num': gen_token_num,
+            }
+
+            meta_path = os.path.join(output_dir, f"{sample_id}_meta.json")
+            with open(meta_path, 'w', encoding='utf-8') as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+
+            results.append({
+                'sample_id': sample_id,
+                'meta_path': meta_path,
+                'group': group,
+                'heva': result['heva'],
+                'correct': answer_pred in sample['answer'],
             })
 
         except Exception as e:
             errors.append({'idx': idx, 'error': str(e)})
             print(f"Error at idx {idx}: {e}")
 
+    # 保存索引文件
+    index_path = os.path.join(output_dir, 'index.json')
+    with open(index_path, 'w') as f:
+        json.dump({
+            'results': results,
+            'errors': errors,
+            'num_samples': len(results),
+            'num_errors': len(errors),
+        }, f, indent=2)
+
+    print(f"\nSaved {len(results)} results to {output_dir}")
+    print(f"Errors: {len(errors)}")
+
     return results, errors
 
 
 def main():
     import config
+
     parser = argparse.ArgumentParser(description='Run group analysis experiment')
-    parser.add_argument('--num_samples', type=int, default=100, help='Number of samples')
-    parser.add_argument('--start_idx', type=int, default=0, help='Start index')
-    parser.add_argument('--save_path', type=str, default=os.path.join(config.RESULTS_DIR, 'group_analysis.pkl'),
-                        help='Output path')
-    parser.add_argument('--max_new_tokens', type=int, default=128, help='Max new tokens')
+
+    # 实验配置
+    parser.add_argument('--exp_name', type=str, default=config.DEFAULT_EXP_NAME,
+                       help='Experiment name')
+    parser.add_argument('--dataset', type=str, default='VisuRiddles',
+                       choices=SUPPORTED_DATASETS, help='Dataset name')
+
+    # 采样配置
+    parser.add_argument('--num_samples', type=int, default=-1, help='Number of samples (-1 for all)')
+    parser.add_argument('--shuffle', type=str, default='false', choices=['true', 'false'], help='Shuffle dataset')
+    parser.add_argument('--batch_size', type=int, default=1, help='Batch size')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed')
+
+    # 模型超参数
+    parser.add_argument('--max_new_tokens', type=int, default=8192, help='Max new tokens')
+    parser.add_argument('--temperature', type=float, default=0.7, help='Temperature')
+    parser.add_argument('--top_p', type=float, default=0.9, help='Top-p')
+    parser.add_argument('--top_k', type=int, default=50, help='Top-k')
+    parser.add_argument('--image_size', type=int, default=448, help='Image size')
+
+    # 模型配置
+    parser.add_argument('--model_path', type=str, default=None, help='Model path')
 
     args = parser.parse_args()
 
+    # 设置随机种子
+    set_seed(args.seed)
+
+    # 设置输出目录
+    args.output_dir = os.path.join(config.RESULTS_DIR, args.exp_name, args.dataset, "group_analysis")
+
+    # 保存实验配置
+    model_path = args.model_path if args.model_path else config.MODEL_DIR
+    exp_config = {
+        'exp_name': args.exp_name,
+        'dataset': args.dataset,
+        'model_name': model_path.split("/")[-1],
+        'model_path': model_path,
+        'num_samples': args.num_samples,
+        'shuffle': args.shuffle,
+        'batch_size': args.batch_size,
+        'seed': args.seed,
+        'max_new_tokens': args.max_new_tokens,
+        'temperature': args.temperature,
+        'top_p': args.top_p,
+        'top_k': args.top_k,
+        'image_size': args.image_size,
+    }
+
+    os.makedirs(args.output_dir, exist_ok=True)
+    config_path = os.path.join(args.output_dir, 'config.json')
+    with open(config_path, 'w', encoding='utf-8') as f:
+        json.dump(exp_config, f, indent=2, ensure_ascii=False)
+    print(f"Config saved to: {config_path}")
+
     # 加载模型和数据
     print("Loading model...")
-    model = load_model()
+    model = load_model(model_path=args.model_path)
 
-    print("Loading dataset...")
-    dataset = load_dataset()
+    print(f"Loading dataset: {args.dataset}...")
+    dataset = load_dataset(args.dataset)
+    print(f"Dataset size: {len(dataset)}")
 
     # 确定样本索引
-    end_idx = min(args.start_idx + args.num_samples, len(dataset))
-    sample_indices = list(range(args.start_idx, end_idx))
+    if args.num_samples == -1:
+        end_idx = len(dataset)
+    else:
+        end_idx = min(args.num_samples, len(dataset))
+    sample_indices = list(range(0, end_idx))
 
-    print(f"Processing samples {args.start_idx} to {end_idx}")
+    if args.shuffle.lower() == 'true':
+        import random
+        random.seed(42)
+        random.shuffle(sample_indices)
+
+    print(f"Processing samples 0 to {end_idx} ({len(sample_indices)} samples)")
+    print(f"Output directory: {args.output_dir}")
 
     # 运行分析
     results, errors = run_group_analysis(
         model, dataset, sample_indices,
-        args.save_path, args.max_new_tokens
+        args.output_dir,
+        args.max_new_tokens,
+        args.temperature,
+        args.top_p,
+        args.top_k,
+        args.image_size,
     )
 
-    # 保存结果
-    os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
-
-    import pickle
-    with open(args.save_path, 'wb') as f:
-        pickle.dump({
-            'results': results,
-            'errors': errors
-        }, f)
-
-    print(f"Saved {len(results)} results to {args.save_path}")
-
     # 统计分组
-    visual_samples = [r for r in results if r['group'] == 'visual-critical']
-    language_samples = [r for r in results if r['group'] == 'language-guessable']
+    if results:
+        visual_samples = [r for r in results if r.get('group') == 'visual-critical']
+        language_samples = [r for r in results if r.get('group') == 'language-guessable']
 
-    print(f"\nGroup Statistics:")
-    print(f"  Visual-Critical: {len(visual_samples)}")
-    print(f"  Language-Guessable: {len(language_samples)}")
+        print(f"\nGroup Statistics:")
+        print(f"  Visual-Critical: {len(visual_samples)}")
+        print(f"  Language-Guessable: {len(language_samples)}")
 
-    if len(visual_samples) > 0:
-        mean_visual = sum(r['heva'] for r in visual_samples) / len(visual_samples)
-        print(f"  Mean HEVA (Visual): {mean_visual:.4f}")
+        if len(visual_samples) > 0:
+            mean_visual = sum(r['heva'] for r in visual_samples) / len(visual_samples)
+            print(f"  Mean HEVA (Visual): {mean_visual:.4f}")
 
-    if len(language_samples) > 0:
-        mean_language = sum(r['heva'] for r in language_samples) / len(language_samples)
-        print(f"  Mean HEVA (Language): {mean_language:.4f}")
+        if len(language_samples) > 0:
+            mean_language = sum(r['heva'] for r in language_samples) / len(language_samples)
+            print(f"  Mean HEVA (Language): {mean_language:.4f}")
 
 
 if __name__ == "__main__":

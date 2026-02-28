@@ -2,6 +2,11 @@
 时间动态分析脚本
 
 分析 HEVA 和 entropy 在生成过程中的时间动态
+
+新格式：
+- results/{exp_name}/{dataset}/
+  - {sample_id}_meta.json (人类可读元数据)
+  - {sample_id}_tensor.pkl (tensor数据)
 """
 
 import argparse
@@ -10,23 +15,57 @@ import os
 import pickle
 import numpy as np
 import torch
+from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from data.loader import load_dataset
+from data.loader import load_dataset, SUPPORTED_DATASETS
 from models.inference import load_model
 from metrics.heva import compute_entropy, compute_token_visual_attention
+
+
+# 异步保存tensor的线程池
+_executor = ThreadPoolExecutor(max_workers=4)
+
+
+def save_tensor_async(tensor_data, filepath):
+    """异步保存tensor数据"""
+    def _save():
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        with open(filepath, 'wb') as f:
+            pickle.dump(tensor_data, f)
+    _executor.submit(_save)
+
+
+def set_seed(seed: int):
+    """设置全局随机种子以保证可复现性"""
+    import random
+    import numpy as np
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    print(f"Random seed set to: {seed}")
 
 
 def run_temporal_analysis(
     model,
     dataset,
     sample_indices,
-    output_path,
+    output_dir,
     alpha=0.2,
-    max_new_tokens=128
+    max_new_tokens=8192,
+    temperature=0.7,
+    top_p=0.9,
+    top_k=50,
+    image_size=448,
 ):
     """
     运行时间动态分析
@@ -35,10 +74,12 @@ def run_temporal_analysis(
         model: 推理模型
         dataset: 数据集
         sample_indices: 样本索引
-        output_path: 输出路径
+        output_dir: 输出目录
         alpha: 高熵 token 比例
         max_new_tokens: 最大生成长度
     """
+    os.makedirs(output_dir, exist_ok=True)
+
     all_entropies = []
     all_visual_attentions = []
     all_high_entropy_attentions = []
@@ -47,15 +88,23 @@ def run_temporal_analysis(
     for idx in tqdm(sample_indices, desc="Running temporal analysis"):
         try:
             sample = dataset[idx]
-            question_with_options = sample['question'] + "\n" + sample['options']
 
             # 运行推理
             result = model.generate_with_attention(
                 image=sample['image'],
-                question=question_with_options,
+                question=sample['question'],
+                options=sample['options'],
                 max_new_tokens=max_new_tokens,
-                temperature=0.7,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                image_size=image_size,
             )
+
+            # 检查结果是否有效
+            if result is None or result.get('logits') is None:
+                print(f"Warning: Failed to get valid result for idx {idx}, skipping...")
+                continue
 
             # 提取数据
             logits = result['logits']
@@ -90,8 +139,10 @@ def run_temporal_analysis(
             all_visual_attentions.append(visual_attns)
             all_high_entropy_attentions.append(high_entropy_attns)
 
+            sample_id = str(sample['id']).replace('/', '_').replace('\\', '_').replace(':', '_')
+
             results.append({
-                'sample_id': sample['id'],
+                'sample_id': sample_id,
                 'idx': idx,
                 'entropies': entropies_gen,
                 'visual_attentions': visual_attns,
@@ -103,7 +154,7 @@ def run_temporal_analysis(
             print(f"Error at idx {idx}: {e}")
 
     # 计算对齐的平均曲线
-    max_len = max(len(e) for e in all_entropies)
+    max_len = max(len(e) for e in all_entropies) if all_entropies else 0
 
     # Pad 到相同长度
     entropies_padded = []
@@ -123,24 +174,18 @@ def run_temporal_analysis(
     mean_entropy = np.nanmean(entropies_array, axis=0)
     mean_visual_attn = np.nanmean(visual_attns_array, axis=0)
 
-    # 保存结果
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-    with open(output_path, 'wb') as f:
-        pickle.dump({
+    # 保存索引文件
+    index_path = os.path.join(output_dir, 'index.json')
+    with open(index_path, 'w') as f:
+        json.dump({
             'results': results,
-            'mean_entropy': mean_entropy,
-            'mean_visual_attention': mean_visual_attn,
-            'all_entropies': all_entropies,
-            'all_visual_attentions': all_visual_attentions,
-            'all_high_entropy_attentions': all_high_entropy_attentions,
-        }, f)
+            'mean_entropy': mean_entropy.tolist() if len(mean_entropy) > 0 else [],
+            'mean_visual_attention': mean_visual_attn.tolist() if len(mean_visual_attn) > 0 else [],
+        }, f, indent=2)
 
-    print(f"Saved temporal analysis to {output_path}")
+    print(f"Saved temporal analysis to {output_dir}")
 
     # 计算相关性
-    # 对齐到答案 token 的位置
-    # 简化：取最后一个 token 的 entropy 和 visual attention
     last_entropy = np.array([r['entropies'][-1] for r in results if len(r['entropies']) > 0])
     last_visual_attn = np.array([r['visual_attentions'][-1] for r in results if len(r['visual_attentions']) > 0])
 
@@ -153,33 +198,100 @@ def run_temporal_analysis(
 
 def main():
     import config
+
     parser = argparse.ArgumentParser(description='Run temporal analysis')
-    parser.add_argument('--num_samples', type=int, default=30, help='Number of samples')
-    parser.add_argument('--start_idx', type=int, default=0, help='Start index')
-    parser.add_argument('--save_path', type=str, default=os.path.join(config.RESULTS_DIR, 'temporal_analysis.pkl'),
-                        help='Output path')
+
+    # 实验配置
+    parser.add_argument('--exp_name', type=str, default=config.DEFAULT_EXP_NAME,
+                       help='Experiment name')
+    parser.add_argument('--dataset', type=str, default='VisuRiddles',
+                       choices=SUPPORTED_DATASETS, help='Dataset name')
+
+    # 采样配置
+    parser.add_argument('--num_samples', type=int, default=-1, help='Number of samples (-1 for all)')
+    parser.add_argument('--shuffle', type=str, default='false', choices=['true', 'false'], help='Shuffle dataset')
+    parser.add_argument('--batch_size', type=int, default=1, help='Batch size')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed')
+
+    # 模型超参数
+    parser.add_argument('--max_new_tokens', type=int, default=8192, help='Max new tokens')
+    parser.add_argument('--temperature', type=float, default=0.7, help='Temperature')
+    parser.add_argument('--top_p', type=float, default=0.9, help='Top-p')
+    parser.add_argument('--top_k', type=int, default=50, help='Top-k')
+    parser.add_argument('--image_size', type=int, default=448, help='Image size')
+
+    # 分析参数
     parser.add_argument('--alpha', type=float, default=0.2, help='High entropy ratio')
-    parser.add_argument('--max_new_tokens', type=int, default=128, help='Max new tokens')
+
+    # 模型配置
+    parser.add_argument('--model_path', type=str, default=None, help='Model path')
 
     args = parser.parse_args()
 
+    # 设置随机种子
+    set_seed(args.seed)
+
+    # 设置输出目录
+    args.output_dir = os.path.join(config.RESULTS_DIR, args.exp_name, args.dataset, "temporal_analysis")
+
+    # 保存实验配置
+    model_path = args.model_path if args.model_path else config.MODEL_DIR
+    exp_config = {
+        'exp_name': args.exp_name,
+        'dataset': args.dataset,
+        'model_name': model_path.split("/")[-1],
+        'model_path': model_path,
+        'num_samples': args.num_samples,
+        'shuffle': args.shuffle,
+        'batch_size': args.batch_size,
+        'seed': args.seed,
+        'alpha': args.alpha,
+        'max_new_tokens': args.max_new_tokens,
+        'temperature': args.temperature,
+        'top_p': args.top_p,
+        'top_k': args.top_k,
+        'image_size': args.image_size,
+    }
+
+    os.makedirs(args.output_dir, exist_ok=True)
+    config_path = os.path.join(args.output_dir, 'config.json')
+    with open(config_path, 'w', encoding='utf-8') as f:
+        json.dump(exp_config, f, indent=2, ensure_ascii=False)
+    print(f"Config saved to: {config_path}")
+
     # 加载模型和数据
     print("Loading model...")
-    model = load_model()
+    model = load_model(model_path=args.model_path)
 
-    print("Loading dataset...")
-    dataset = load_dataset()
+    print(f"Loading dataset: {args.dataset}...")
+    dataset = load_dataset(args.dataset)
+    print(f"Dataset size: {len(dataset)}")
 
     # 确定样本索引
-    end_idx = min(args.start_idx + args.num_samples, len(dataset))
-    sample_indices = list(range(args.start_idx, end_idx))
+    if args.num_samples == -1:
+        end_idx = len(dataset)
+    else:
+        end_idx = min(args.num_samples, len(dataset))
+    sample_indices = list(range(0, end_idx))
 
-    print(f"Processing samples {args.start_idx} to {end_idx}")
+    if args.shuffle.lower() == 'true':
+        import random
+        random.seed(42)
+        random.shuffle(sample_indices)
+
+    print(f"Processing samples 0 to {end_idx} ({len(sample_indices)} samples)")
+    print(f"Output directory: {args.output_dir}")
 
     # 运行分析
     run_temporal_analysis(
         model, dataset, sample_indices,
-        args.save_path, args.alpha, args.max_new_tokens
+        args.output_dir,
+        args.alpha,
+        args.max_new_tokens,
+        args.temperature,
+        args.top_p,
+        args.top_k,
+        args.image_size,
     )
 
 
