@@ -138,13 +138,16 @@ def run_group_analysis(
             if result.get('attentions') is not None:
                 is_normalized = validate_attention_normalization(result['attentions'])
 
-            # 计算 HEVA
+            # 计算 HEVA (多个 alpha 值: 10% 到 100%)
             try:
-                heva_result = compute_heva_from_result(result, alpha=0.2)
-                result['heva'] = heva_result['heva']
+                heva_values = {}
+                for alpha in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
+                    heva_result = compute_heva_from_result(result, alpha=alpha)
+                    heva_values[f'heva_{int(alpha*100)}'] = float(heva_result['heva'])
+                result['heva_dict'] = heva_values
             except Exception as e:
                 print(f"Warning: Failed to compute HEVA for idx {idx}: {e}")
-                result['heva'] = 0.0
+                result['heva_dict'] = {f'heva_{int(a*100)}': 0.0 for a in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]}
 
             # 检查生成的答案 - 使用 JSON 格式提取
             generated_text = result['generated_text']
@@ -171,7 +174,7 @@ def run_group_analysis(
                 'predicted_answer': answer_pred,
                 'generated_text': generated_text,
                 'correct': answer_pred in sample['answer'],
-                'heva': float(result['heva']),
+                'heva': result.get('heva_dict', {}),
                 'attention_validated': is_normalized,
                 'prompt_token_num': result['prompt_length'],
                 'gen_token_num': gen_token_num,
@@ -185,7 +188,7 @@ def run_group_analysis(
                 'sample_id': sample_id,
                 'meta_path': meta_path,
                 'group': group,
-                'heva': result['heva'],
+                'heva': result.get('heva_dict', {}),
                 'correct': answer_pred in sample['answer'],
             })
 

@@ -1,22 +1,11 @@
-#!/bin/bash
-# 运行所有数据集的快速测试脚本
-# 每个数据集只跑 1 个样本
-
-set -e
-
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$PROJECT_DIR"
-
-echo "=========================================="
-echo "  快速测试: 每个数据集跑 100 个样本"
-echo "=========================================="
-echo ""
-
-# 所有支持的数据集
-DATASETS="VisuRiddles,RAVEN,MARVEL,LogicVista,PuzzleVQA,AlgoPuzzleVQA"
-
 # 调用 start.sh
-./start.sh --exp_name exp001 -d "$DATASETS" -n 100 -b 8 -s true -m 8192 -g 1
+ASCEND_RT_VISIBLE_DEVICES=0 nohup bash ./start.sh --exp_name exp001 -d VisuRiddles   -n 300 -b 1 -s true -m 24576 -g 1 > VisuRiddles.out &
+ASCEND_RT_VISIBLE_DEVICES=1 nohup bash ./start.sh --exp_name exp001 -d RAVEN         -n 300 -b 1 -s true -m 24576 -g 1 > RAVEN.out &
+ASCEND_RT_VISIBLE_DEVICES=2 nohup bash ./start.sh --exp_name exp001 -d MARVEL        -n 300 -b 1 -s true -m 24576 -g 1 > MARVEL.out &
+ASCEND_RT_VISIBLE_DEVICES=3 nohup bash ./start.sh --exp_name exp001 -d LogicVista    -n 300 -b 1 -s true -m 24576 -g 1 > LogicVista.out &
+ASCEND_RT_VISIBLE_DEVICES=4 nohup bash ./start.sh --exp_name exp001 -d PuzzleVQA     -n 300 -b 1 -s true -m 24576 -g 1 > PuzzleVQA.out &
+ASCEND_RT_VISIBLE_DEVICES=5 nohup bash ./start.sh --exp_name exp001 -d AlgoPuzzleVQA -n 300 -b 1 -s true -m 24576 -g 1 > AlgoPuzzleVQA.out &
 
-echo ""
-echo "所有数据集快速测试完成!"
+
+
+

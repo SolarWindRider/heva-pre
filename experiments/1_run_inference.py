@@ -94,13 +94,16 @@ def run_inference(model, dataset, sample_indices, output_dir,
                 result['attention_validated'] = False
                 print(f"Warning: No attention data for idx {idx}, proceeding without attention validation")
 
-            # 计算 HEVA
+            # 计算 HEVA (多个 alpha 值: 10% 到 100%)
             try:
-                heva_result = compute_heva_from_result(result, alpha=0.2)
-                result['heva'] = heva_result['heva']
+                heva_values = {}
+                for alpha in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
+                    heva_result = compute_heva_from_result(result, alpha=alpha)
+                    heva_values[f'heva_{int(alpha*100)}'] = float(heva_result['heva'])
+                result['heva_dict'] = heva_values
             except Exception as e:
                 print(f"Warning: Failed to compute HEVA for idx {idx}: {e}")
-                result['heva'] = 0.0
+                result['heva_dict'] = {f'heva_{int(a*100)}': 0.0 for a in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]}
 
             # 检查生成的答案
             generated_text = result['generated_text']
@@ -126,6 +129,7 @@ def run_inference(model, dataset, sample_indices, output_dir,
             meta = {
                 'sample_id': sample_id,
                 'idx': idx,
+                'image_path': sample.get('image_path', ''),
                 'question': sample['question'],
                 'options': sample['options'],
                 'raw_question': result.get('raw_question', ''),  # 问题+选项+JSON格式指令
@@ -134,7 +138,7 @@ def run_inference(model, dataset, sample_indices, output_dir,
                 'predicted_answer': answer_pred,
                 'generated_text': generated_text,
                 'correct': answer_pred in sample['answer'],
-                'heva': float(result['heva']),
+                'heva': result.get('heva_dict', {}),  # HEVA 字典: {heva_10: x, heva_20: x, ..., heva_100: x}
                 'attention_validated': is_normalized,
                 'prompt_token_num': result['prompt_length'],
                 'gen_token_num': gen_token_num,

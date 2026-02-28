@@ -98,18 +98,36 @@ def analyze_single_dataset(results, dataset_name):
     stats['accuracy'] = accuracy
     print(f"Accuracy: {accuracy:.2%}")
 
-    # HEVA 统计
-    mean_heva = df['heva'].mean()
-    std_heva = df['heva'].std()
+    # HEVA 统计 - 支持新格式 (字典) 和旧格式 (数值)
+    # 新格式: heva 是字典 {heva_10: x, heva_20: x, ..., heva_100: x}
+    if 'heva' in df.columns and len(df['heva']) > 0:
+        first_heva = df['heva'].iloc[0]
+        if isinstance(first_heva, dict):
+            # 新格式: 提取 heva_20 作为默认统计值
+            df['heva_numeric'] = df['heva'].apply(lambda x: x.get('heva_20', x.get('heva_100', 0.0)) if isinstance(x, dict) else x)
+            heva_col = df['heva_numeric']
+            # 保存完整的 heva_dict 统计
+            for alpha_key in ['heva_10', 'heva_20', 'heva_30', 'heva_40', 'heva_50', 'heva_60', 'heva_70', 'heva_80', 'heva_90', 'heva_100']:
+                alpha_values = df['heva'].apply(lambda x: x.get(alpha_key, 0.0) if isinstance(x, dict) else 0.0)
+                stats[f'{alpha_key}_mean'] = alpha_values.mean()
+                stats[f'{alpha_key}_std'] = alpha_values.std()
+        else:
+            # 旧格式: 已经是数值
+            heva_col = df['heva']
+    else:
+        heva_col = pd.Series([0.0] * len(df))
+
+    mean_heva = heva_col.mean()
+    std_heva = heva_col.std()
     stats['mean_heva'] = mean_heva
     stats['std_heva'] = std_heva
 
-    print(f"\nHEVA Statistics:")
+    print(f"\nHEVA Statistics (alpha=20%):")
     print(f"  Mean: {mean_heva:.4f}")
     print(f"  Std: {std_heva:.4f}")
 
     # 详细统计
-    heva_values = df['heva'].values
+    heva_values = heva_col.values
     detailed_stats = compute_summary_statistics(heva_values)
     for k, v in detailed_stats.items():
         stats[f'heva_{k}'] = v
@@ -135,14 +153,21 @@ def analyze_perturbation_results(results):
     print("\nHEVA by Condition:")
     print(grouped)
 
+    # 处理 heva 列 - 支持字典格式
+    if 'heva' in df.columns and len(df['heva']) > 0:
+        first_heva = df['heva'].iloc[0]
+        if isinstance(first_heva, dict):
+            df['heva_numeric'] = df['heva'].apply(lambda x: x.get('heva_20', x.get('heva_100', 0.0)) if isinstance(x, dict) else x)
+
     # 与 original 比较
-    original_heva = df[df['condition'] == 'original']['heva'].values
+    heva_key = 'heva_numeric' if 'heva_numeric' in df.columns else 'heva'
+    original_heva = df[df['condition'] == 'original'][heva_key].values
 
     conditions = df['condition'].unique()
     for cond in conditions:
         if cond == 'original':
             continue
-        cond_heva = df[df['condition'] == cond]['heva'].values
+        cond_heva = df[df['condition'] == cond][heva_key].values
 
         if len(original_heva) > 0 and len(cond_heva) > 0:
             # t-test
@@ -168,8 +193,19 @@ def analyze_group_results(results):
     print(f"Language-Guessable: {len(language_samples)} samples")
 
     if len(visual_samples) > 0 and len(language_samples) > 0:
-        visual_heva = visual_samples['heva'].values
-        language_heva = language_samples['heva'].values
+        # 处理 heva 列 - 支持字典格式
+        if 'heva' in df.columns and len(df['heva']) > 0:
+            first_heva = df['heva'].iloc[0]
+            if isinstance(first_heva, dict):
+                df['heva_numeric'] = df['heva'].apply(lambda x: x.get('heva_20', x.get('heva_100', 0.0)) if isinstance(x, dict) else x)
+                visual_heva = visual_samples['heva_numeric'].values
+                language_heva = language_samples['heva_numeric'].values
+            else:
+                visual_heva = visual_samples['heva'].values
+                language_heva = language_samples['heva'].values
+        else:
+            visual_heva = np.array([])
+            language_heva = np.array([])
 
         # t-test
         ttest = compute_ttest(visual_heva, language_heva)
@@ -212,17 +248,33 @@ def generate_plots(results, output_dir, dataset_name):
 
     df = pd.DataFrame(results)
 
+    # 处理 heva 列 - 支持字典格式
+    if 'heva' in df.columns and len(df['heva']) > 0:
+        first_heva = df['heva'].iloc[0]
+        if isinstance(first_heva, dict):
+            # 新格式: 提取数值
+            df['heva_numeric'] = df['heva'].apply(lambda x: x.get('heva_20', x.get('heva_100', 0.0)) if isinstance(x, dict) else x)
+            heva_values = df['heva_numeric'].values
+        else:
+            heva_values = df['heva'].values
+    else:
+        heva_values = np.array([])
+
     # HEVA 分布
     plot_heva_distribution(
-        df['heva'].values,
+        heva_values,
         title=f"HEVA Distribution - {dataset_name}",
         save_path=os.path.join(output_dir, f'heva_distribution_{dataset_name}.png')
     )
 
     # 分组对比
     if 'group' in df.columns:
-        visual_heva = df[df['group'] == 'visual-critical']['heva'].values
-        language_heva = df[df['group'] == 'language-guessable']['heva'].values
+        if 'heva_numeric' in df.columns:
+            visual_heva = df[df['group'] == 'visual-critical']['heva_numeric'].values
+            language_heva = df[df['group'] == 'language-guessable']['heva_numeric'].values
+        else:
+            visual_heva = df[df['group'] == 'visual-critical']['heva'].values
+            language_heva = df[df['group'] == 'language-guessable']['heva'].values
 
         if len(visual_heva) > 0 and len(language_heva) > 0:
             plot_group_comparison(
