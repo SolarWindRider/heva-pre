@@ -57,17 +57,18 @@ class Qwen3VLInference:
         else:
             device_map = "cpu"
 
+        # 设置使用 eager attention 以支持 attention 输出
+        from transformers import AutoConfig
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+        config._attn_implementation = "eager"
+
         self.model = AutoModelForVision2Seq.from_pretrained(
             model_path,
             torch_dtype=torch.bfloat16,
             device_map=device_map,
-            trust_remote_code=True
+            trust_remote_code=True,
+            config=config
         )
-        # 设置使用 SDPA attention
-        if hasattr(self.model, 'config'):
-            self.model.config.attn_implementation = "sdpa"
-        if hasattr(self.model, 'set_attn_implementation'):
-            self.model.set_attn_implementation("sdpa")
 
         # 先移动到设备，再确保 bf16 精度
         if self.device != "cpu" and device_map != "auto":
@@ -75,6 +76,12 @@ class Qwen3VLInference:
 
         # 确保模型使用 bf16 精度
         self.model = self.model.to(dtype=torch.bfloat16)
+
+        # 确认使用 eager attention
+        self.model.config._attn_implementation = "eager"
+
+        # 设置为评估模式
+        self.model.eval()
 
         self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
 
@@ -260,6 +267,10 @@ class Qwen3VLInference:
         full_input_ids = generated_ids.unsqueeze(0)
         full_attention_mask = torch.ones_like(full_input_ids)
 
+        # 获取 attention 和 logits
+        attentions = None
+        logits = None
+
         try:
             with torch.no_grad():
                 outputs = self.model(
@@ -274,8 +285,6 @@ class Qwen3VLInference:
             logits = outputs.logits
         except Exception as e:
             print(f"Warning: Failed to get attentions: {e}")
-            attentions = None
-            logits = None
 
         # 计算 HEVA
         heva_value = 0.0
@@ -293,7 +302,7 @@ class Qwen3VLInference:
                     "attentions": attentions,
                     "visual_token_indices": visual_token_indices,
                     "prompt_length": prompt_length,
-                    "input_ids": input_ids[0],
+                    "input_ids": generated_ids,  # 使用完整的生成序列
                 }, alpha=0.2)
                 heva_value = heva_result['heva']
             except Exception as e:

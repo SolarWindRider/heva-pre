@@ -199,6 +199,9 @@ def validate_attention_normalization(attentions: Tuple[torch.Tensor], sample_idx
     Returns:
         是否归一化
     """
+    if attentions is None or len(attentions) == 0:
+        return False
+
     attn = attentions[-1][sample_idx]  # (num_heads, seq_len, seq_len)
 
     # 对最后一个维度求和
