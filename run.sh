@@ -16,7 +16,7 @@ echo ""
 DATASETS="VisuRiddles,RAVEN,MARVEL,LogicVista,PuzzleVQA,AlgoPuzzleVQA"
 
 # 调用 start.sh
-./start.sh -d "$DATASETS" -n 100 -b 4 -s true -m 8192
+./start.sh --exp_name exp001 -d "$DATASETS" -n 100 -b 4 -s true -m 8192
 
 echo ""
 echo "所有数据集快速测试完成!"
