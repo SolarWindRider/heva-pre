@@ -4,7 +4,6 @@
 新格式：
 - results/{exp_name}/{dataset}/
   - {sample_id}_meta.json (人类可读元数据)
-  - {sample_id}_tensor.pkl (tensor数据，异步保存)
 
 usage: python 1_run_inference.py [--exp_name EXP_NAME] [--dataset DATASET] [--num_samples N]
 """
@@ -13,10 +12,6 @@ import argparse
 import json
 import os
 import torch
-import pickle
-import asyncio
-import aiofiles
-from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 
 import sys
@@ -25,19 +20,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.loader import load_dataset
 from models.inference import load_model
 from metrics.heva import compute_heva_from_result, validate_attention_normalization
-
-
-# 异步保存tensor的线程池
-_executor = ThreadPoolExecutor(max_workers=4)
-
-
-def save_tensor_async(tensor_data, filepath):
-    """异步保存tensor数据"""
-    def _save():
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        with open(filepath, 'wb') as f:
-            pickle.dump(tensor_data, f)
-    _executor.submit(_save)
 
 
 def run_inference(model, dataset, sample_indices, output_dir,
@@ -61,7 +43,6 @@ def run_inference(model, dataset, sample_indices, output_dir,
 
     results = []
     errors = []
-    tensor_filepaths = []
 
     for idx in tqdm(sample_indices, desc="Running inference"):
         try:
@@ -144,44 +125,14 @@ def run_inference(model, dataset, sample_indices, output_dir,
                 'gen_token_num': gen_token_num,
             }
 
-            # 准备tensor数据 (需要序列化)
-            # 处理 attention 和 entropies 可能为 None 的情况
-            attentions_cpu = None
-            if result.get('attentions') is not None:
-                try:
-                    attentions_cpu = [attn.cpu() for attn in result['attentions']]
-                except Exception as e:
-                    print(f"Warning: Failed to convert attentions to CPU: {e}")
-
-            entropies_cpu = None
-            if 'heva_result' in dir() and heva_result is not None:
-                try:
-                    entropies_cpu = heva_result['entropies'].cpu()
-                except Exception as e:
-                    print(f"Warning: Failed to convert entropies to CPU: {e}")
-
-            tensor_data = {
-                'logits': result['logits'].cpu() if result['logits'] is not None else None,
-                'visual_token_indices': result['visual_token_indices'].cpu(),
-                'input_ids': result['input_ids'].cpu(),
-                'entropies_tensor': entropies_cpu,
-                'attentions': attentions_cpu,
-            }
-
             # 保存元数据为json
             meta_path = os.path.join(output_dir, f"{sample_id}_meta.json")
             with open(meta_path, 'w', encoding='utf-8') as f:
                 json.dump(meta, f, ensure_ascii=False, indent=2)
 
-            # 异步保存tensor
-            tensor_path = os.path.join(output_dir, f"{sample_id}_tensor.pkl")
-            save_tensor_async(tensor_data, tensor_path)
-            tensor_filepaths.append(tensor_path)
-
             results.append({
                 'sample_id': sample_id,
                 'meta_path': meta_path,
-                'tensor_path': tensor_path,
             })
 
         except Exception as e:

@@ -50,8 +50,6 @@ def load_inference_results(dataset_dir):
             if os.path.exists(meta_path):
                 with open(meta_path, 'r', encoding='utf-8') as f:
                     meta = json.load(f)
-                # 加载tensor数据路径
-                meta['tensor_path'] = item['tensor_path']
                 results.append(meta)
             else:
                 print(f"Warning: Meta file not found: {meta_path}")
