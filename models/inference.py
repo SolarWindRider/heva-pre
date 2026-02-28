@@ -63,14 +63,18 @@ class Qwen3VLInference:
             device_map=device_map,
             trust_remote_code=True
         )
-        # 设置使用 eager attention 以支持 attention 输出
+        # 设置使用 SDPA attention
         if hasattr(self.model, 'config'):
-            self.model.config.attn_implementation = "eager"
+            self.model.config.attn_implementation = "sdpa"
         if hasattr(self.model, 'set_attn_implementation'):
-            self.model.set_attn_implementation("eager")
+            self.model.set_attn_implementation("sdpa")
 
+        # 先移动到设备，再确保 bf16 精度
         if self.device != "cpu" and device_map != "auto":
             self.model = self.model.to(self.device)
+
+        # 确保模型使用 bf16 精度
+        self.model = self.model.to(dtype=torch.bfloat16)
 
         self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
 
