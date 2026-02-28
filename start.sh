@@ -1,23 +1,4 @@
 #!/bin/bash
-# HEVA 实验启动脚本
-# 用法: ./start.sh [选项]
-#
-# 选项:
-#   -e, --exp_name      实验名称 (默认: exp001)
-#   -d, --dataset       数据集名称 (默认: VisuRiddles, 可用逗号分隔多个)
-#   -n, --num_samples   样本数量 (默认: -1, 全部样本)
-#   -s, --shuffle       是否打乱数据集 (默认: false)
-#   -b, --batch_size    batch size (默认: 1)
-#   -r, --seed         随机种子 (默认: 42)
-#   -t, --temperature   温度 (默认: 0.7)
-#   -m, --max_tokens    最大生成长度 (默认: 128)
-#   -h, --help          显示帮助信息
-#
-# 示例:
-#   ./start.sh                          # 使用默认参数运行
-#   ./start.sh -d VisuRiddles -n 10    # 处理 VisuRiddles 前10个样本
-#   ./start.sh -e exp002 -d RAVEN -n 100 -t 0.5  # 自定义实验
-
 set -e
 
 # 默认参数
@@ -33,6 +14,7 @@ TOP_P=0.9
 TOP_K=50
 IMAGE_SIZE=448
 MODEL_PATH=""
+NUM_GPUS=8
 
 # 解析命令行参数
 while [[ $# -gt 0 ]]; do
@@ -85,6 +67,10 @@ while [[ $# -gt 0 ]]; do
             MODEL_PATH="$2"
             shift 2
             ;;
+        -g|--num_gpus)
+            NUM_GPUS="$2"
+            shift 2
+            ;;
         -h|--help)
             echo "HEVA 实验启动脚本"
             echo ""
@@ -103,6 +89,7 @@ while [[ $# -gt 0 ]]; do
             echo "  -k, --top_k         top-k 采样 (默认: 50)"
             echo "  -i, --image_size    图像大小 (默认: 448)"
             echo "  -o, --model_path    模型路径 (默认: config.py 中的路径)"
+            echo "  -g, --num_gpus     GPU数量 (默认: 1)"
             echo "  -h, --help          显示帮助信息"
             echo ""
             echo "示例:"
@@ -138,6 +125,7 @@ echo "最大长度:    $MAX_NEW_TOKENS"
 echo "top-p:       $TOP_P"
 echo "top-k:       $TOP_K"
 echo "图像大小:    $IMAGE_SIZE"
+echo "GPU数量:    $NUM_GPUS"
 echo "输出目录:    results/$EXP_NAME/<dataset>"
 echo "=========================================="
 echo ""
@@ -163,7 +151,8 @@ for ds in "${DATASETS[@]}"; do
         --max_new_tokens \"$MAX_NEW_TOKENS\" \
         --top_p \"$TOP_P\" \
         --top_k \"$TOP_K\" \
-        --image_size \"$IMAGE_SIZE\""
+        --image_size \"$IMAGE_SIZE\" \
+        --num_gpus \"$NUM_GPUS\""
 
     # 如果指定了模型路径，添加到命令中
     if [ -n "$MODEL_PATH" ]; then

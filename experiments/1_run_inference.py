@@ -250,6 +250,7 @@ def main():
 
     # 模型配置
     parser.add_argument('--model_path', type=str, default=None, help='Model path (default: from config.py)')
+    parser.add_argument('--num_gpus', type=int, default=1, help='Number of GPUs to use')
 
     args = parser.parse_args()
 
@@ -271,6 +272,7 @@ def main():
         'dataset': args.dataset,
         'model_name': model_path.split("/")[-1],
         'model_path': model_path,
+        'num_gpus': args.num_gpus,
         'num_samples': args.num_samples,
         'shuffle': args.shuffle,
         'batch_size': args.batch_size,
@@ -289,7 +291,7 @@ def main():
 
     # 加载模型和数据
     print("Loading model...")
-    model = load_model(model_path=args.model_path)
+    model = load_model(model_path=args.model_path, num_gpus=args.num_gpus)
 
     print(f"Loading dataset: {args.dataset}...")
     dataset = load_dataset(args.dataset)
@@ -311,7 +313,7 @@ def main():
 
     print(f"Processing samples 0 to {end_idx} ({len(sample_indices)} samples)")
     print(f"Output directory: {args.output_dir}")
-    print(f"Hyperparameters: max_new_tokens={args.max_new_tokens}, temperature={args.temperature}, top_p={args.top_p}, top_k={args.top_k}")
+    print(f"Hyperparameters: max_new_tokens={args.max_new_tokens}, temperature={args.temperature}, top_p={args.top_p}, top_k={args.top_k}, num_gpus={args.num_gpus}")
 
     # 运行推理
     run_inference(

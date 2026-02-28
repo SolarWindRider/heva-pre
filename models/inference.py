@@ -31,20 +31,26 @@ def get_device():
 class Qwen3VLInference:
     """Qwen3-VL 推理类"""
 
-    def __init__(self, model_path: str, device: str = None):
+    def __init__(self, model_path: str, device: str = None, num_gpus: int = 1):
         """
         Args:
             model_path: 模型路径
             device: 设备，默认为自动检测
+            num_gpus: 使用的GPU数量，默认为1
         """
         self.device = device or get_device()
         self.model_path = model_path
+        self.num_gpus = num_gpus
 
         print(f"Loading model from {model_path}...")
         print(f"Using device: {self.device}")
+        print(f"Number of GPUs: {num_gpus}")
 
-        # 根据设备类型设置 device_map
-        if self.device == "npu":
+        # 根据设备类型和GPU数量设置 device_map
+        if num_gpus > 1:
+            # 多卡模式：使用 device_map="auto" 自动分布到多个GPU
+            device_map = "auto"
+        elif self.device == "npu":
             device_map = "npu"
         elif self.device == "cuda":
             device_map = "cuda"
@@ -65,10 +71,6 @@ class Qwen3VLInference:
 
         if self.device != "cpu" and device_map != "auto":
             self.model = self.model.to(self.device)
-
-        self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
-
-        print(f"Model loaded on {self.device}")
 
         self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
 
@@ -371,20 +373,20 @@ class Qwen3VLInference:
 _model_cache = {}
 
 
-def load_model(model_path: str = None, device: str = None, reuse: bool = True) -> Qwen3VLInference:
-    """加载模型的便捷函数，支持缓存复用"""
+def load_model(model_path: str = None, device: str = None, num_gpus: int = 1, reuse: bool = True) -> Qwen3VLInference:
+    """加载模型的便捷函数，支持缓存复用和多卡"""
     import config
     if model_path is None:
         model_path = config.MODEL_DIR
 
     # 如果启用缓存且模型已加载，直接返回缓存的模型
-    cache_key = f"{model_path}_{device}"
+    cache_key = f"{model_path}_{device}_{num_gpus}"
     if reuse and cache_key in _model_cache:
         print(f"Reusing cached model: {model_path}")
         return _model_cache[cache_key]
 
     # 加载新模型
-    model = Qwen3VLInference(model_path, device)
+    model = Qwen3VLInference(model_path, device, num_gpus)
 
     # 缓存模型
     if reuse:

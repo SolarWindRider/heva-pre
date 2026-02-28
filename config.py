@@ -15,7 +15,7 @@ DATA_FILE = os.path.join(DATA_DIR, "VisuRiddles.json")
 IMAGE_DIR = DATA_DIR
 
 # 模型路径
-MODEL_DIR = os.path.join(PROJECT_ROOT, "../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct")
+MODEL_DIR = os.path.join(PROJECT_ROOT, "../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking")
 
 # 输出目录
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
