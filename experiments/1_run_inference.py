@@ -118,7 +118,7 @@ def run_inference(model, dataset, sample_indices, output_dir,
                 'ground_truth': sample['answer'],
                 'predicted_answer': answer_pred,
                 'generated_text': generated_text,
-                'correct': answer_pred in sample['answer'],
+                'correct': answer_pred in sample['answer'].upper(),
                 'heva': result.get('heva_dict', {}),  # HEVA 字典: {heva_10: x, heva_20: x, ..., heva_100: x}
                 'attention_validated': is_normalized,
                 'prompt_token_num': result['prompt_length'],
