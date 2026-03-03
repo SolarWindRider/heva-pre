@@ -15,6 +15,7 @@ TOP_K=50
 IMAGE_SIZE=448
 MODEL_PATH=""
 NUM_GPUS=8
+HEVA_DEVICE=""
 
 # 解析命令行参数
 while [[ $# -gt 0 ]]; do
@@ -71,6 +72,10 @@ while [[ $# -gt 0 ]]; do
             NUM_GPUS="$2"
             shift 2
             ;;
+        --heva_device)
+            HEVA_DEVICE="$2"
+            shift 2
+            ;;
         -h|--help)
             echo "HEVA 实验启动脚本"
             echo ""
@@ -90,12 +95,14 @@ while [[ $# -gt 0 ]]; do
             echo "  -i, --image_size    图像大小 (默认: 448)"
             echo "  -o, --model_path    模型路径 (默认: config.py 中的路径)"
             echo "  -g, --num_gpus     GPU数量 (默认: 1)"
+            echo "  --heva_device       HEVA计算设备 (默认: 与模型相同)"
             echo "  -h, --help          显示帮助信息"
             echo ""
             echo "示例:"
             echo "  $0                          # 使用默认参数运行"
             echo "  $0 -d VisuRiddles -n 10    # 处理 VisuRiddles 前10个样本"
             echo "  $0 -e exp002 -d RAVEN -n 100 -t 0.5  # 自定义实验"
+            echo "  $0 --heva_device npu:1     # 使用npu:1计算HEVA"
             exit 0
             ;;
         *)
@@ -126,6 +133,7 @@ echo "top-p:       $TOP_P"
 echo "top-k:       $TOP_K"
 echo "图像大小:    $IMAGE_SIZE"
 echo "GPU数量:    $NUM_GPUS"
+echo "HEVA设备:   $HEVA_DEVICE"
 echo "输出目录:    results/$EXP_NAME/<dataset>"
 echo "=========================================="
 echo ""
@@ -157,6 +165,11 @@ for ds in "${DATASETS[@]}"; do
     # 如果指定了模型路径，添加到命令中
     if [ -n "$MODEL_PATH" ]; then
         PYTHON_CMD="$PYTHON_CMD --model_path \"$MODEL_PATH\""
+    fi
+
+    # 如果指定了HEVA计算设备，添加到命令中
+    if [ -n "$HEVA_DEVICE" ]; then
+        PYTHON_CMD="$PYTHON_CMD --heva_device \"$HEVA_DEVICE\""
     fi
 
     eval $PYTHON_CMD
