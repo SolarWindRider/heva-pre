@@ -46,6 +46,37 @@ def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
     return entropy
 
 
+def compute_entropy_chunked(
+    logits: torch.Tensor,
+    chunk_size: int = 256
+) -> torch.Tensor:
+    """
+    分块计算 entropy (时间换空间，适用于显存不足的情况)
+
+    Args:
+        logits: (seq_len, vocab_size)
+        chunk_size: 每次处理的 token 数量
+
+    Returns:
+        entropy: (seq_len,)
+    """
+    seq_len = logits.shape[0]
+    entropies = []
+
+    for start in range(0, seq_len, chunk_size):
+        end = min(start + chunk_size, seq_len)
+        chunk_logits = logits[start:end, :].to(torch.float32)
+
+        probs = F.softmax(chunk_logits, dim=-1)
+        chunk_entropy = -torch.sum(probs * torch.log(probs + 1e-9), dim=-1)
+
+        # 立即移到 CPU 释放显存
+        entropies.append(chunk_entropy.cpu())
+        del chunk_logits, probs, chunk_entropy
+
+    return torch.cat(entropies, dim=0)
+
+
 def compute_heva(
     logits: torch.Tensor,
     attentions: Tuple[torch.Tensor],
@@ -276,6 +307,7 @@ def compute_heva_chunked(
     gen_token_indices: torch.Tensor,
     alpha: float = 0.2,
     chunk_size: int = 512,
+    use_chunked_entropy: bool = True,
 ) -> Dict[str, Any]:
     """
     分块计算 HEVA（适用于超长序列，节省显存）
@@ -290,12 +322,17 @@ def compute_heva_chunked(
         gen_token_indices: 生成 token 的索引
         alpha: 高熵 token 的比例
         chunk_size: 每批处理的 token 数量
+        use_chunked_entropy: 是否使用分块计算 entropy (时间换空间)
 
     Returns:
         HEVA 计算结果
     """
     # 1. 计算所有 token 的 entropy
-    entropies = compute_entropy(logits)
+    if use_chunked_entropy:
+        # 使用分块版本节省显存 (时间换空间)
+        entropies = compute_entropy_chunked(logits, chunk_size=chunk_size)
+    else:
+        entropies = compute_entropy(logits)
 
     # 计算完熵后立即释放logits内存 (NPU memory optimization)
     del logits
