@@ -29,3 +29,15 @@ DEFAULT_EXP_NAME = "exp001"
 os.makedirs(RESULTS_DIR, exist_ok=True)
 os.makedirs(PLOTS_DIR, exist_ok=True)
 os.makedirs(TABLES_DIR, exist_ok=True)
+
+# ==================== 显存优化配置 ====================
+# 这些选项可以帮助在显存受限时运行 HEVA 计算
+
+# 显存优化模式：减少 attention 层的存储
+USE_LAST_LAYER_ONLY = True  # 只使用最后一层 attention (推荐开启，大幅减少显存)
+
+# 分块计算：当序列很长时分块处理
+CHUNK_SIZE = 512  # 分块大小，当序列长度超过此值时分块计算
+
+# 是否在计算后清理 GPU 缓存
+CLEAR_CACHE_AFTER_COMPUTE = True

@@ -46,6 +46,7 @@ def compute_heva(
     visual_token_indices: torch.Tensor,
     gen_token_indices: torch.Tensor,
     alpha: float = 0.2,
+    use_last_layer_only: bool = True,
 ) -> Dict[str, Any]:
     """
     计算 HEVA 指标
@@ -56,6 +57,7 @@ def compute_heva(
         visual_token_indices: 视觉 token 的索引
         gen_token_indices: 生成 token 的索引
         alpha: 高熵 token 的比例
+        use_last_layer_only: 是否只使用最后一层 attention（节省显存）
 
     Returns:
         {
@@ -87,27 +89,36 @@ def compute_heva(
     _, top_indices = torch.topk(entropy_gen, k)
     selected_tokens = gen_token_indices[top_indices]  # 高熵 token 的绝对索引
 
-    # 4. 获取最后一层的 attention
+    # 4. 获取最后一层的 attention (使用 bfloat16 减少显存)
     # attentions 是 Tuple[ (batch, num_heads, seq_len, seq_len) ]
-    attn = attentions[-1][0].to(torch.float32)  # (num_heads, seq_len, seq_len)
+    attn = attentions[-1][0]  # (num_heads, seq_len, seq_len) - 保持原 dtype
     num_heads = attn.shape[0]
+    seq_len = attn.shape[1]
 
-    # 5. 对每个高熵 token 计算视觉注意力
-    visual_attentions = []
+    # 5. 批量计算所有高熵 token 对视觉 token 的注意力（避免循环）
+    if len(visual_token_indices) > 0:
+        # 将 visual_token_indices 转为掩码
+        visual_mask = torch.zeros(seq_len, dtype=torch.bool, device=attn.device)
+        visual_mask[visual_token_indices] = True
 
-    for t in selected_tokens:
-        # attn[:, t, :] 的形状: (num_heads, seq_len)
-        attn_t = attn[:, t, :]  # (num_heads, seq_len)
+        # 批量获取所有 selected_tokens 的注意力
+        # attn[:, selected_tokens, :] 形状: (num_heads, k, seq_len)
+        attn_selected = attn[:, selected_tokens, :]  # (num_heads, k, seq_len)
 
-        # 对视觉 token 求和
-        if len(visual_token_indices) > 0:
-            visual_attn_sum = attn_t[:, visual_token_indices].sum(dim=-1)  # (num_heads,)
-        else:
-            visual_attn_sum = torch.zeros(num_heads, device=attn.device)
+        # 对视觉 token 求和 (使用掩码)
+        # 需要将 visual_mask 扩展到兼容维度
+        visual_mask_expanded = visual_mask.unsqueeze(0).unsqueeze(1)  # (1, 1, seq_len)
+        attn_selected_masked = attn_selected.masked_fill(~visual_mask_expanded, 0)
 
-        # 对 head 求平均
-        v_t = visual_attn_sum.mean().item()  # scalar
-        visual_attentions.append(v_t)
+        # 对 seq_len 维度求和 -> (num_heads, k)
+        visual_attn_sum = attn_selected_masked.sum(dim=-1)
+
+        # 对 head 求平均 -> (k,)
+        v_t = visual_attn_sum.mean(dim=0)  # (k,)
+
+        visual_attentions = v_t.tolist()
+    else:
+        visual_attentions = [0.0] * len(selected_tokens)
 
     # 6. 计算 HEVA
     if len(visual_attentions) > 0:
@@ -135,6 +146,8 @@ def compute_heva_from_result(result: Dict[str, Any], alpha: float = 0.2) -> Dict
     Returns:
         HEVA 计算结果
     """
+    import config
+
     # 获取参数
     logits = result["logits"]
     attentions = result["attentions"]
@@ -147,12 +160,37 @@ def compute_heva_from_result(result: Dict[str, Any], alpha: float = 0.2) -> Dict
     # 生成 token 从 prompt_length 开始，到序列结束
     gen_token_indices = torch.arange(prompt_length, len(input_ids), device=input_ids.device)
 
+    # 获取序列长度
+    seq_len = input_ids.shape[0] if hasattr(input_ids, 'shape') else len(input_ids)
+
+    # 处理 logits 长度与 input_ids 不匹配的情况
+    # (generate 可能只返回生成部分的 logits)
+    if logits is not None:
+        logits_len = logits.shape[0] if hasattr(logits, 'shape') else len(logits)
+        if logits_len != seq_len:
+            # logits 长度不匹配，需要调整
+            # 只保留生成部分的 gen_token_indices
+            gen_token_indices = torch.arange(0, logits_len, device=logits.device)
+            seq_len = logits_len
+
+    # 如果序列很长，使用分块计算
+    if seq_len > config.CHUNK_SIZE and config.USE_LAST_LAYER_ONLY:
+        return compute_heva_chunked(
+            logits=logits,
+            attentions=attentions,
+            visual_token_indices=visual_token_indices,
+            gen_token_indices=gen_token_indices,
+            alpha=alpha,
+            chunk_size=config.CHUNK_SIZE
+        )
+
     return compute_heva(
         logits=logits,
         attentions=attentions,
         visual_token_indices=visual_token_indices,
         gen_token_indices=gen_token_indices,
-        alpha=alpha
+        alpha=alpha,
+        use_last_layer_only=config.USE_LAST_LAYER_ONLY
     )
 
 
@@ -211,12 +249,106 @@ def validate_attention_normalization(attentions: Tuple[torch.Tensor], sample_idx
     return torch.allclose(row_sums, torch.ones_like(row_sums), atol=1e-5)
 
 
+def compute_heva_chunked(
+    logits: torch.Tensor,
+    attentions: Tuple[torch.Tensor],
+    visual_token_indices: torch.Tensor,
+    gen_token_indices: torch.Tensor,
+    alpha: float = 0.2,
+    chunk_size: int = 512,
+) -> Dict[str, Any]:
+    """
+    分块计算 HEVA（适用于超长序列，节省显存）
+
+    当序列很长时，将高熵 token 分批处理，每批处理 chunk_size 个 token，
+    避免一次性加载所有 attention 数据导致显存溢出。
+
+    Args:
+        logits: (seq_len, vocab_size) 模型输出的 logits
+        attentions: (num_layers, batch, num_heads, seq_len, seq_len) attention 元组
+        visual_token_indices: 视觉 token 的索引
+        gen_token_indices: 生成 token 的索引
+        alpha: 高熵 token 的比例
+        chunk_size: 每批处理的 token 数量
+
+    Returns:
+        HEVA 计算结果
+    """
+    # 1. 计算所有 token 的 entropy
+    entropies = compute_entropy(logits)
+
+    if len(gen_token_indices) == 0:
+        return {
+            "heva": 0.0,
+            "high_entropy_tokens": torch.tensor([], dtype=torch.long),
+            "visual_attentions": [],
+            "entropies": entropies
+        }
+
+    entropy_gen = entropies[gen_token_indices]
+
+    # 2. 选取 top-alpha 高熵 token
+    k = max(1, int(len(entropy_gen) * alpha))
+    if k >= len(entropy_gen):
+        k = len(entropy_gen) - 1
+
+    _, top_indices = torch.topk(entropy_gen, k)
+    selected_tokens = gen_token_indices[top_indices]
+
+    # 3. 获取最后一层 attention
+    attn = attentions[-1][0]  # (num_heads, seq_len, seq_len)
+    num_heads = attn.shape[0]
+    seq_len = attn.shape[1]
+
+    # 4. 分块计算
+    visual_attentions = []
+
+    if len(visual_token_indices) > 0:
+        visual_mask = torch.zeros(seq_len, dtype=torch.bool, device=attn.device)
+        visual_mask[visual_token_indices] = True
+
+        # 分批处理
+        for start in range(0, len(selected_tokens), chunk_size):
+            end = min(start + chunk_size, len(selected_tokens))
+            chunk_tokens = selected_tokens[start:end]
+
+            # 获取当前 chunk 的 attention
+            attn_chunk = attn[:, chunk_tokens, :]  # (num_heads, chunk_size, seq_len)
+
+            # 扩展掩码
+            visual_mask_expanded = visual_mask.unsqueeze(0).unsqueeze(1)  # (1, 1, seq_len)
+            attn_chunk_masked = attn_chunk.masked_fill(~visual_mask_expanded, 0)
+
+            # 求和
+            visual_attn_sum = attn_chunk_masked.sum(dim=-1)  # (num_heads, chunk_size)
+            v_t = visual_attn_sum.mean(dim=0)  # (chunk_size,)
+
+            visual_attentions.extend(v_t.tolist())
+
+            # 释放中间变量
+            del attn_chunk, attn_chunk_masked, visual_attn_sum
+    else:
+        visual_attentions = [0.0] * len(selected_tokens)
+
+    # 5. 计算 HEVA
+    heva = np.mean(visual_attentions) if visual_attentions else 0.0
+
+    return {
+        "heva": heva,
+        "high_entropy_tokens": selected_tokens,
+        "visual_attentions": visual_attentions,
+        "entropies": entropies,
+        "selected_entropy_values": entropy_gen[top_indices].float().cpu().numpy()
+    }
+
+
 if __name__ == "__main__":
     # 测试
     print("HEVA module loaded successfully")
     print("Functions available:")
     print("  - compute_entropy")
     print("  - compute_heva")
+    print("  - compute_heva_chunked (分块计算，适用于超长序列)")
     print("  - compute_heva_from_result")
     print("  - compute_token_visual_attention")
     print("  - validate_attention_normalization")

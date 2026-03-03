@@ -233,7 +233,7 @@ class Qwen3VLInference:
         else:
             prompt_length = len(input_ids[0])
 
-        # 生成
+        # 生成 (同时获取 attention 和 logits，单次推理)
         with torch.no_grad():
             output = self.model.generate(
                 input_ids,
@@ -246,45 +246,29 @@ class Qwen3VLInference:
                 top_k=top_k,
                 do_sample=do_sample,
                 return_dict_in_generate=True,
+                output_attentions=True,  # 输出 attention
+                output_scores=True,     # 输出 logits
             )
 
         # 提取结果
-        # output.sequences 包含输入 + 输出
-        # 使用 prompt_length 而不是 input_len 来切片，因为 prompt_length 是用户消息结束的位置
         generated_ids = output.sequences[0]
-        gen_ids = generated_ids[prompt_length:]  # 从用户消息结束后开始取
+        gen_ids = generated_ids[prompt_length:]
 
-        # 先不用 skip_special_tokens，获取完整输出
         generated_text = self.processor.batch_decode(
             gen_ids.unsqueeze(0) if gen_ids.dim() == 1 else gen_ids,
             skip_special_tokens=False
         )[0]
-        # 只清理特殊token，保留markdown格式
         generated_text = generated_text.replace('<|im_end|>', '').replace('<|endoftext|>', '').strip()
 
-        # 使用 forward_with_attention 获取 attention 和 logits
-        # 将生成的 token 加入输入，重新前向传播获取 attention
-        full_input_ids = generated_ids.unsqueeze(0)
-        full_attention_mask = torch.ones_like(full_input_ids)
+        # 提取 attention
+        attentions = output.attentions
 
-        # 获取 attention 和 logits
-        attentions = None
+        # 从 generate 输出中提取 logits
+        # output.scores 是 (gen_len,) 元组，每个元素是 (1, vocab_size)
         logits = None
-
-        try:
-            with torch.no_grad():
-                outputs = self.model(
-                    input_ids=full_input_ids,
-                    attention_mask=full_attention_mask,
-                    pixel_values=pixel_values,
-                    image_grid_thw=image_grid_thw,
-                    output_attentions=True,
-                    return_dict=True,
-                )
-            attentions = outputs.attentions
-            logits = outputs.logits
-        except Exception as e:
-            print(f"Warning: Failed to get attentions: {e}")
+        if output.scores is not None and len(output.scores) > 0:
+            # 转换为 (gen_len, vocab_size)
+            logits = torch.cat([output.scores[i] for i in range(len(output.scores))], dim=0)
 
         # 计算 HEVA
         heva_value = 0.0
@@ -305,13 +289,23 @@ class Qwen3VLInference:
                     "input_ids": generated_ids,  # 使用完整的生成序列
                 }, alpha=0.2)
                 heva_value = heva_result['heva']
+
+                # HEVA 计算完成后释放 attentions
+                del attentions
+                if self.device != "cpu":
+                    torch.cuda.empty_cache() if self.device == "cuda" else None
+                    try:
+                        import torch_npu
+                        torch_npu.npu.empty_cache()
+                    except:
+                        pass
             except Exception as e:
                 print(f"Warning: Failed to compute HEVA: {e}")
 
         return {
             "generated_text": generated_text,
             "generated_ids": generated_ids,
-            "logits": logits[0] if logits is not None else None,
+            "logits": logits,  # 已经是 (seq_len, vocab_size) 格式
             "attentions": attentions,
             "input_ids": input_ids[0],
             "generated_ids": generated_ids,  # 完整的生成序列
