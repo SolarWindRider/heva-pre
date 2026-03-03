@@ -8,6 +8,12 @@ import torch
 from transformers import AutoModelForVision2Seq, AutoProcessor
 from typing import Dict, Any, Tuple, Optional
 import torch.nn.functional as F
+import sys
+
+# 立即刷新输出的打印函数
+def log_print(*args, **kwargs):
+    kwargs.setdefault('flush', True)
+    print(*args, **kwargs)
 
 # 检测设备类型
 def get_device():
@@ -42,9 +48,9 @@ class Qwen3VLInference:
         self.model_path = model_path
         self.num_gpus = num_gpus
 
-        print(f"Loading model from {model_path}...")
-        print(f"Using device: {self.device}")
-        print(f"Number of GPUs: {num_gpus}")
+        log_print(f"Loading model from {model_path}...")
+        log_print(f"Using device: {self.device}")
+        log_print(f"Number of GPUs: {num_gpus}")
 
         # 根据设备类型和GPU数量设置 device_map
         if num_gpus > 1:
@@ -85,7 +91,7 @@ class Qwen3VLInference:
 
         self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
 
-        print(f"Model loaded on {self.device}")
+        log_print(f"Model loaded on {self.device}")
 
     def get_visual_token_indices(self, input_ids: torch.Tensor) -> torch.Tensor:
         """
@@ -296,13 +302,13 @@ class Qwen3VLInference:
             full_logits = full_outputs.logits.squeeze(0).detach()  # (full_seq_len, vocab_size)
 
             # 打印调试信息
-            print(f"[DEBUG] full_logits shape: {full_logits.shape}")
-            print(f"[DEBUG] full_attentions layers: {len(full_attentions)}, first layer shape: {full_attentions[0].shape if full_attentions else 'None'}")
-            print(f"[DEBUG] visual_token_indices: {visual_token_indices[:10]}... (total: {len(visual_token_indices)})")
-            print(f"[DEBUG] prompt_length: {prompt_length}, generated_ids length: {len(generated_ids)}")
+            log_print(f"[DEBUG] full_logits shape: {full_logits.shape}")
+            log_print(f"[DEBUG] full_attentions layers: {len(full_attentions)}, first layer shape: {full_attentions[0].shape if full_attentions else 'None'}")
+            log_print(f"[DEBUG] visual_token_indices: {visual_token_indices[:10]}... (total: {len(visual_token_indices)})")
+            log_print(f"[DEBUG] prompt_length: {prompt_length}, generated_ids length: {len(generated_ids)}")
         except Exception as e:
             import traceback
-            print(f"[ERROR] Failed to get full sequence attention: {e}")
+            log_print(f"[ERROR] Failed to get full sequence attention: {e}")
             traceback.print_exc()
 
         # 计算 HEVA (使用完整序列的 logits 和 attention)
@@ -310,8 +316,8 @@ class Qwen3VLInference:
         if full_logits is not None and full_attentions is not None:
             try:
                 # 延迟导入避免循环依赖
-                import sys
-                if 'metrics.heva' in sys.modules:
+                import sys as _sys
+                if 'metrics.heva' in _sys.modules:
                     from metrics.heva import compute_heva_from_result
                 else:
                     from metrics.heva import compute_heva_from_result
@@ -329,11 +335,11 @@ class Qwen3VLInference:
                 heva_value = heva_result['heva']
 
                 # 打印 HEVA 结果详情
-                print(f"[DEBUG] HEVA computed: {heva_value}")
+                log_print(f"[DEBUG] HEVA computed: {heva_value}")
                 if 'selected_entropy_values' in heva_result:
-                    print(f"[DEBUG] Selected entropy values: {heva_result.get('selected_entropy_values', [])[:5]}...")
+                    log_print(f"[DEBUG] Selected entropy values: {heva_result.get('selected_entropy_values', [])[:5]}...")
                 if 'visual_attentions' in heva_result:
-                    print(f"[DEBUG] Visual attentions: {heva_result.get('visual_attentions', [])[:5]}...")
+                    log_print(f"[DEBUG] Visual attentions: {heva_result.get('visual_attentions', [])[:5]}...")
 
                 # HEVA 计算完成后释放内存
                 del full_attentions, full_logits
@@ -346,11 +352,11 @@ class Qwen3VLInference:
                         pass
             except Exception as e:
                 import traceback
-                print(f"[ERROR] Failed to compute HEVA: {e}")
+                log_print(f"[ERROR] Failed to compute HEVA: {e}")
                 traceback.print_exc()
         else:
-            print(f"[WARNING] full_logits or full_attentions is None, skipping HEVA computation")
-            print(f"[DEBUG] full_logits: {full_logits}, full_attentions: {full_attentions}")
+            log_print(f"[WARNING] full_logits or full_attentions is None, skipping HEVA computation")
+            log_print(f"[DEBUG] full_logits: {full_logits}, full_attentions: {full_attentions}")
 
         return {
             "generated_text": generated_text,
@@ -439,7 +445,7 @@ def load_model(model_path: str = None, device: str = None, num_gpus: int = 1, re
     # 如果启用缓存且模型已加载，直接返回缓存的模型
     cache_key = f"{model_path}_{device}_{num_gpus}"
     if reuse and cache_key in _model_cache:
-        print(f"Reusing cached model: {model_path}")
+        log_print(f"Reusing cached model: {model_path}")
         return _model_cache[cache_key]
 
     # 加载新模型
@@ -448,7 +454,7 @@ def load_model(model_path: str = None, device: str = None, num_gpus: int = 1, re
     # 缓存模型
     if reuse:
         _model_cache[cache_key] = model
-        print(f"Model cached: {model_path}")
+        log_print(f"Model cached: {model_path}")
 
     return model
 
@@ -460,16 +466,16 @@ if __name__ == "__main__":
     dataset = load_dataset()
     sample = dataset[0]
 
-    print("Loading model...")
+    log_print("Loading model...")
     model = load_model()
 
-    print("Running inference...")
+    log_print("Running inference...")
     result = model.generate_with_attention(
         image=sample['image'],
         question=sample['question'] + "\n" + sample['options']
     )
 
-    print(f"Generated text: {result['generated_text'][:200]}...")
-    print(f"Visual token indices: {result['visual_token_indices']}")
-    print(f"Prompt length: {result['prompt_length']}")
-    print(f"Attention layers: {len(result['attentions'])}")
+    log_print(f"Generated text: {result['generated_text'][:200]}...")
+    log_print(f"Visual token indices: {result['visual_token_indices']}")
+    log_print(f"Prompt length: {result['prompt_length']}")
+    log_print(f"Attention layers: {len(result['attentions'])}")
