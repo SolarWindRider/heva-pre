@@ -297,6 +297,9 @@ def compute_heva_chunked(
     # 1. 计算所有 token 的 entropy
     entropies = compute_entropy(logits)
 
+    # 计算完熵后立即释放logits内存 (NPU memory optimization)
+    del logits
+
     if len(gen_token_indices) == 0:
         return {
             "heva": 0.0,
@@ -352,6 +355,9 @@ def compute_heva_chunked(
 
     # 5. 计算 HEVA
     heva = np.mean(visual_attentions) if visual_attentions else 0.0
+
+    # 释放attentions内存 (NPU memory optimization)
+    del attentions
 
     return {
         "heva": heva,
