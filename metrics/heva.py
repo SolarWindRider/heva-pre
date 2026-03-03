@@ -157,21 +157,17 @@ def compute_heva_from_result(result: Dict[str, Any], alpha: float = 0.2) -> Dict
     prompt_length = result["prompt_length"]
     input_ids = result["input_ids"]
 
+    # 获取序列长度 (优先使用 logits 的长度，因为它是完整序列)
+    seq_len = logits.shape[0] if hasattr(logits, 'shape') and logits is not None else (
+        input_ids.shape[0] if hasattr(input_ids, 'shape') else len(input_ids)
+    )
+
     # 生成 token 从 prompt_length 开始，到序列结束
-    gen_token_indices = torch.arange(prompt_length, len(input_ids), device=input_ids.device)
-
-    # 获取序列长度
-    seq_len = input_ids.shape[0] if hasattr(input_ids, 'shape') else len(input_ids)
-
-    # 处理 logits 长度与 input_ids 不匹配的情况
-    # (generate 可能只返回生成部分的 logits)
-    if logits is not None:
-        logits_len = logits.shape[0] if hasattr(logits, 'shape') else len(logits)
-        if logits_len != seq_len:
-            # logits 长度不匹配，需要调整
-            # 只保留生成部分的 gen_token_indices
-            gen_token_indices = torch.arange(0, logits_len, device=logits.device)
-            seq_len = logits_len
+    # 确保 prompt_length 不超过 seq_len
+    if prompt_length < seq_len:
+        gen_token_indices = torch.arange(prompt_length, seq_len, device=logits.device if logits is not None else 'cpu')
+    else:
+        gen_token_indices = torch.tensor([], dtype=torch.long, device=logits.device if logits is not None else 'cpu')
 
     # 如果序列很长，使用分块计算
     if seq_len > config.CHUNK_SIZE and config.USE_LAST_LAYER_ONLY:

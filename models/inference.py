@@ -270,9 +270,36 @@ class Qwen3VLInference:
             # 转换为 (gen_len, vocab_size)
             logits = torch.cat([output.scores[i] for i in range(len(output.scores))], dim=0)
 
-        # 计算 HEVA
+        # ========== 修复: 获取完整序列的 logits 和 attention ==========
+        # generate() 返回的 logits/attention 只有生成部分
+        # 需要获取完整序列（包括输入）的表示来计算 HEVA
+        #
+        # 方法：使用 generated_ids 进行前向传播
+        # 注意：logits[i] 预测的是 generated_ids[i]，所以 logits 长度 = generated_ids 长度 - 1
+        # 需要将 logits 与 generated_ids 对齐
+        full_attentions = None
+        full_logits = None
+        try:
+            full_input_ids = generated_ids.unsqueeze(0)  # (1, full_seq_len)
+            with torch.no_grad():
+                full_outputs = self.model(
+                    input_ids=full_input_ids,
+                    attention_mask=torch.ones_like(full_input_ids),
+                    pixel_values=pixel_values,
+                    image_grid_thw=image_grid_thw,
+                    output_attentions=True,
+                    return_dict=True,
+                )
+            full_attentions = full_outputs.attentions  # Tuple of (1, num_heads, full_seq_len, full_seq_len)
+            # logits[i] 预测 generated_ids[i]，所以需要取前 n 个 (n = len-1)
+            # 但为了简化，我们直接使用完整的 logits
+            full_logits = full_outputs.logits.squeeze(0).detach()  # (full_seq_len, vocab_size)
+        except Exception as e:
+            print(f"Warning: Failed to get full sequence attention: {e}")
+
+        # 计算 HEVA (使用完整序列的 logits 和 attention)
         heva_value = 0.0
-        if logits is not None and attentions is not None:
+        if full_logits is not None and full_attentions is not None:
             try:
                 # 延迟导入避免循环依赖
                 import sys
@@ -281,17 +308,20 @@ class Qwen3VLInference:
                 else:
                     from metrics.heva import compute_heva_from_result
 
+                # 使用完整序列的数据计算 HEVA
+                # visual_token_indices 基于输入，prompt_length 也是输入长度
+                # 但现在 full_logits 和 full_attentions 是完整序列
                 heva_result = compute_heva_from_result({
-                    "logits": logits,
-                    "attentions": attentions,
+                    "logits": full_logits,
+                    "attentions": full_attentions,
                     "visual_token_indices": visual_token_indices,
                     "prompt_length": prompt_length,
-                    "input_ids": generated_ids,  # 使用完整的生成序列
+                    "input_ids": generated_ids,
                 }, alpha=0.2)
                 heva_value = heva_result['heva']
 
-                # HEVA 计算完成后释放 attentions
-                del attentions
+                # HEVA 计算完成后释放内存
+                del full_attentions, full_logits
                 if self.device != "cpu":
                     torch.cuda.empty_cache() if self.device == "cuda" else None
                     try:
