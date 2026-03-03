@@ -294,8 +294,16 @@ class Qwen3VLInference:
             # logits[i] 预测 generated_ids[i]，所以需要取前 n 个 (n = len-1)
             # 但为了简化，我们直接使用完整的 logits
             full_logits = full_outputs.logits.squeeze(0).detach()  # (full_seq_len, vocab_size)
+
+            # 打印调试信息
+            print(f"[DEBUG] full_logits shape: {full_logits.shape}")
+            print(f"[DEBUG] full_attentions layers: {len(full_attentions)}, first layer shape: {full_attentions[0].shape if full_attentions else 'None'}")
+            print(f"[DEBUG] visual_token_indices: {visual_token_indices[:10]}... (total: {len(visual_token_indices)})")
+            print(f"[DEBUG] prompt_length: {prompt_length}, generated_ids length: {len(generated_ids)}")
         except Exception as e:
-            print(f"Warning: Failed to get full sequence attention: {e}")
+            import traceback
+            print(f"[ERROR] Failed to get full sequence attention: {e}")
+            traceback.print_exc()
 
         # 计算 HEVA (使用完整序列的 logits 和 attention)
         heva_value = 0.0
@@ -320,6 +328,13 @@ class Qwen3VLInference:
                 }, alpha=0.2)
                 heva_value = heva_result['heva']
 
+                # 打印 HEVA 结果详情
+                print(f"[DEBUG] HEVA computed: {heva_value}")
+                if 'selected_entropy_values' in heva_result:
+                    print(f"[DEBUG] Selected entropy values: {heva_result.get('selected_entropy_values', [])[:5]}...")
+                if 'visual_attentions' in heva_result:
+                    print(f"[DEBUG] Visual attentions: {heva_result.get('visual_attentions', [])[:5]}...")
+
                 # HEVA 计算完成后释放内存
                 del full_attentions, full_logits
                 if self.device != "cpu":
@@ -330,7 +345,12 @@ class Qwen3VLInference:
                     except:
                         pass
             except Exception as e:
-                print(f"Warning: Failed to compute HEVA: {e}")
+                import traceback
+                print(f"[ERROR] Failed to compute HEVA: {e}")
+                traceback.print_exc()
+        else:
+            print(f"[WARNING] full_logits or full_attentions is None, skipping HEVA computation")
+            print(f"[DEBUG] full_logits: {full_logits}, full_attentions: {full_attentions}")
 
         return {
             "generated_text": generated_text,

@@ -153,14 +153,23 @@ def compute_heva_from_result(result: Dict[str, Any], alpha: float = 0.2) -> Dict
     attentions = result["attentions"]
     visual_token_indices = result["visual_token_indices"]
 
+    # 打印调试信息
+    print(f"[HEVA] logits: {logits.shape if logits is not None else None}")
+    print(f"[HEVA] attentions: {len(attentions) if attentions else None} layers")
+    print(f"[HEVA] visual_token_indices: len={len(visual_token_indices) if visual_token_indices is not None else 0}")
+
     # 计算生成 token 索引
     prompt_length = result["prompt_length"]
     input_ids = result["input_ids"]
+
+    print(f"[HEVA] prompt_length: {prompt_length}")
+    print(f"[HEVA] input_ids length: {len(input_ids) if hasattr(input_ids, '__len__') else 'N/A'}")
 
     # 获取序列长度 (优先使用 logits 的长度，因为它是完整序列)
     seq_len = logits.shape[0] if hasattr(logits, 'shape') and logits is not None else (
         input_ids.shape[0] if hasattr(input_ids, 'shape') else len(input_ids)
     )
+    print(f"[HEVA] seq_len (determined): {seq_len}")
 
     # 生成 token 从 prompt_length 开始，到序列结束
     # 确保 prompt_length 不超过 seq_len
@@ -168,6 +177,15 @@ def compute_heva_from_result(result: Dict[str, Any], alpha: float = 0.2) -> Dict
         gen_token_indices = torch.arange(prompt_length, seq_len, device=logits.device if logits is not None else 'cpu')
     else:
         gen_token_indices = torch.tensor([], dtype=torch.long, device=logits.device if logits is not None else 'cpu')
+
+    print(f"[HEVA] gen_token_indices: len={len(gen_token_indices)}, first 5: {gen_token_indices[:5].tolist() if len(gen_token_indices) > 0 else []}")
+
+    # 检查 visual_token_indices 是否在有效范围内
+    if visual_token_indices is not None and len(visual_token_indices) > 0:
+        max_visual_idx = visual_token_indices.max().item() if len(visual_token_indices) > 0 else 0
+        print(f"[HEVA] max visual_token_idx: {max_visual_idx}, seq_len: {seq_len}")
+        if max_visual_idx >= seq_len:
+            print(f"[ERROR] visual_token_indices contains indices >= seq_len! This will cause all-zero attention.")
 
     # 如果序列很长，使用分块计算
     if seq_len > config.CHUNK_SIZE and config.USE_LAST_LAYER_ONLY:
