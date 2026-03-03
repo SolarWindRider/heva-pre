@@ -25,7 +25,7 @@ from metrics.heva import compute_heva_from_result, validate_attention_normalizat
 def run_inference(model, dataset, sample_indices, output_dir,
                   max_new_tokens=8192, temperature=0.7, top_p=0.9, top_k=50, do_sample=True, image_size=448):
     """
-    运行推理并缓存结果
+    运行推理并缓存结果 (流水线并行：推理和HEVA计算异步进行)
 
     Args:
         model: 推理模型
@@ -44,100 +44,136 @@ def run_inference(model, dataset, sample_indices, output_dir,
     results = []
     errors = []
 
-    for idx in tqdm(sample_indices, desc="Running inference"):
-        try:
-            sample = dataset[idx]
+    # 异步 HEVA 计算：默认启用
+    async_heva = True
+    prev_heva_idx = None  # 记录上一个启动异步HEVA的样本索引
 
-            # 运行推理
-            result = model.generate_with_attention(
-                image=sample['image'],
-                question=sample['question'],
-                options=sample['options'],
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                do_sample=do_sample,
-                image_size=image_size,
-            )
-
-            # 检查结果是否有效
-            if result is None:
-                print(f"Warning: Failed to get valid result for idx {idx}, skipping...")
-                continue
-
-            # 验证 attention 归一化 (如果 attention 可用)
-            is_normalized = False
-            if result.get('attentions') is not None:
-                is_normalized = validate_attention_normalization(result['attentions'])
-                result['attention_validated'] = is_normalized
-            else:
-                result['attention_validated'] = False
-                print(f"Warning: No attention data for idx {idx}, proceeding without attention validation")
-
-            # 计算 HEVA (多个 alpha 值: 10% 到 100%)
+    try:
+        for idx in tqdm(sample_indices, desc="Running inference"):
             try:
-                heva_values = {}
-                for alpha in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
-                    heva_result = compute_heva_from_result(result, alpha=alpha)
-                    heva_values[f'heva_{int(alpha*100)}'] = float(heva_result['heva'])
-                result['heva_dict'] = heva_values
+                sample = dataset[idx]
+
+                # 获取上一个样本的异步 HEVA 结果（如果存在）
+                # 这样可以确保在开始下一个推理前完成上一个的HEVA计算
+                if prev_heva_idx is not None:
+                    prev_heva = model.get_heva_result(prev_heva_idx)
+                    # 将 HEVA 值更新到对应结果中
+                    for r in results:
+                        if r.get('_sample_idx') == prev_heva_idx:
+                            r['heva'] = prev_heva
+                            break
+
+                # 运行推理（异步HEVA计算在内部启动）
+                result = model.generate_with_attention(
+                    image=sample['image'],
+                    question=sample['question'],
+                    options=sample['options'],
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    do_sample=do_sample,
+                    image_size=image_size,
+                    async_heva=async_heva,
+                    sample_idx=idx,
+                )
+                result['_sample_idx'] = idx  # 标记样本索引
+
+                # 检查结果是否有效
+                if result is None:
+                    print(f"Warning: Failed to get valid result for idx {idx}, skipping...")
+                    continue
+
+                # 验证 attention 归一化 (如果 attention 可用)
+                is_normalized = False
+                if result.get('attentions') is not None:
+                    is_normalized = validate_attention_normalization(result['attentions'])
+                    result['attention_validated'] = is_normalized
+                else:
+                    result['attention_validated'] = False
+                    print(f"Warning: No attention data for idx {idx}, proceeding without attention validation")
+
+                # 计算 HEVA (多个 alpha 值: 10% 到 100%)
+                # 注意：这里只计算不同alpha的HEVA，异步模式的alpha=0.2由后台线程计算
+                try:
+                    heva_values = {}
+                    for alpha in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
+                        heva_result = compute_heva_from_result(result, alpha=alpha)
+                        heva_values[f'heva_{int(alpha*100)}'] = float(heva_result['heva'])
+                    result['heva_dict'] = heva_values
+                except Exception as e:
+                    print(f"Warning: Failed to compute HEVA for idx {idx}: {e}")
+                    result['heva_dict'] = {f'heva_{int(a*100)}': 0.0 for a in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]}
+
+                # 检查生成的答案
+                generated_text = result['generated_text']
+                # 提取选项字母 (A, B, C, D)
+                answer_pred = ""
+
+                # 优先从JSON格式提取答案: {"answer": "X"}
+                import re
+                json_match = re.search(r'\{"answer":\s*"([^"]+)"\}', generated_text)
+                if json_match:
+                    answer_pred = json_match.group(1).upper()
+                else:
+                    # 如果没有JSON格式，则认为回答有误，保持空字符
+                    pass
+
+                sample_id = str(sample['id'])
+                # 清理sample_id中的非法文件名字符
+                sample_id = sample_id.replace('/', '_').replace('\\', '_').replace(':', '_')
+
+                # 准备元数据 (人类可读)
+                # gen_token_num = 完整生成序列长度 - prompt长度
+                gen_token_num = len(result['generated_ids']) - result['prompt_length']
+                meta = {
+                    'sample_id': sample_id,
+                    'idx': idx,
+                    'image_path': sample.get('image_path', ''),
+                    'question': sample['question'],
+                    'options': sample['options'],
+                    'raw_question': result.get('raw_question', ''),  # 问题+选项+JSON格式指令
+                    'prompt': result.get('prompt', ''),  # 喂给模型的完整prompt (含特殊token)
+                    'ground_truth': sample['answer'],
+                    'predicted_answer': answer_pred,
+                    'generated_text': generated_text,
+                    'correct': answer_pred in sample['answer'].upper(),
+                    'heva': result.get('heva_dict', {}),  # HEVA 字典: {heva_10: x, heva_20: x, ..., heva_100: x}
+                    'attention_validated': is_normalized,
+                    'prompt_token_num': result['prompt_length'],
+                    'gen_token_num': gen_token_num,
+                }
+
+                # 保存元数据为json
+                meta_path = os.path.join(output_dir, f"{sample_id}_meta.json")
+                with open(meta_path, 'w', encoding='utf-8') as f:
+                    json.dump(meta, f, ensure_ascii=False, indent=2)
+
+                results.append({
+                    'sample_id': sample_id,
+                    'meta_path': meta_path,
+                    '_sample_idx': idx,
+                    'heva': result.get('heva', 0.0),  # 从异步HEVA获取的值
+                })
+
+                # 记录当前索引，供下一次迭代获取结果
+                prev_heva_idx = idx
+
             except Exception as e:
-                print(f"Warning: Failed to compute HEVA for idx {idx}: {e}")
-                result['heva_dict'] = {f'heva_{int(a*100)}': 0.0 for a in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]}
+                errors.append({'idx': idx, 'error': str(e)})
+                print(f"Error at idx {idx}: {e}")
+    finally:
+        # 关闭异步 HEVA 计算线程池
+        if async_heva and hasattr(model, 'shutdown_heva_executor'):
+            model.shutdown_heva_executor()
 
-            # 检查生成的答案
-            generated_text = result['generated_text']
-            # 提取选项字母 (A, B, C, D)
-            answer_pred = ""
-
-            # 优先从JSON格式提取答案: {"answer": "X"}
-            import re
-            json_match = re.search(r'\{"answer":\s*"([^"]+)"\}', generated_text)
-            if json_match:
-                answer_pred = json_match.group(1).upper()
-            else:
-                # 如果没有JSON格式，则认为回答有误，保持空字符
-                pass
-
-            sample_id = str(sample['id'])
-            # 清理sample_id中的非法文件名字符
-            sample_id = sample_id.replace('/', '_').replace('\\', '_').replace(':', '_')
-
-            # 准备元数据 (人类可读)
-            # gen_token_num = 完整生成序列长度 - prompt长度
-            gen_token_num = len(result['generated_ids']) - result['prompt_length']
-            meta = {
-                'sample_id': sample_id,
-                'idx': idx,
-                'image_path': sample.get('image_path', ''),
-                'question': sample['question'],
-                'options': sample['options'],
-                'raw_question': result.get('raw_question', ''),  # 问题+选项+JSON格式指令
-                'prompt': result.get('prompt', ''),  # 喂给模型的完整prompt (含特殊token)
-                'ground_truth': sample['answer'],
-                'predicted_answer': answer_pred,
-                'generated_text': generated_text,
-                'correct': answer_pred in sample['answer'].upper(),
-                'heva': result.get('heva_dict', {}),  # HEVA 字典: {heva_10: x, heva_20: x, ..., heva_100: x}
-                'attention_validated': is_normalized,
-                'prompt_token_num': result['prompt_length'],
-                'gen_token_num': gen_token_num,
-            }
-
-            # 保存元数据为json
-            meta_path = os.path.join(output_dir, f"{sample_id}_meta.json")
-            with open(meta_path, 'w', encoding='utf-8') as f:
-                json.dump(meta, f, ensure_ascii=False, indent=2)
-
-            results.append({
-                'sample_id': sample_id,
-                'meta_path': meta_path,
-            })
-
-        except Exception as e:
-            errors.append({'idx': idx, 'error': str(e)})
-            print(f"Error at idx {idx}: {e}")
+    # 处理最后一个样本的异步 HEVA 结果
+    if async_heva and prev_heva_idx is not None:
+        final_heva = model.get_heva_result(prev_heva_idx)
+        for r in results:
+            if r.get('_sample_idx') == prev_heva_idx:
+                r['heva'] = final_heva
+                break
 
     # 保存索引文件
     index_path = os.path.join(output_dir, 'index.json')
@@ -206,6 +242,7 @@ def main():
     # 模型配置
     parser.add_argument('--model_path', type=str, default=None, help='Model path (default: from config.py)')
     parser.add_argument('--num_gpus', type=int, default=1, help='Number of GPUs to use')
+    parser.add_argument('--heva_device', type=str, default=None, help='Device for HEVA computation (default: same as model device)')
 
     args = parser.parse_args()
 
@@ -228,6 +265,7 @@ def main():
         'model_name': model_path.split("/")[-1],
         'model_path': model_path,
         'num_gpus': args.num_gpus,
+        'heva_device': args.heva_device,
         'num_samples': args.num_samples,
         'shuffle': args.shuffle,
         'batch_size': args.batch_size,
@@ -246,7 +284,7 @@ def main():
 
     # 加载模型和数据
     print("Loading model...")
-    model = load_model(model_path=args.model_path, num_gpus=args.num_gpus)
+    model = load_model(model_path=args.model_path, num_gpus=args.num_gpus, heva_device=args.heva_device)
 
     print(f"Loading dataset: {args.dataset}...")
     dataset = load_dataset(args.dataset)

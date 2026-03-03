@@ -7,6 +7,7 @@ HEVA 模型推理模块
 import torch
 from transformers import AutoModelForVision2Seq, AutoProcessor
 from typing import Dict, Any, Tuple, Optional
+from concurrent.futures import ThreadPoolExecutor
 import torch.nn.functional as F
 import sys
 
@@ -37,19 +38,23 @@ def get_device():
 class Qwen3VLInference:
     """Qwen3-VL 推理类"""
 
-    def __init__(self, model_path: str, device: str = None, num_gpus: int = 1):
+    def __init__(self, model_path: str, device: str = None, num_gpus: int = 1, heva_device: str = None):
         """
         Args:
             model_path: 模型路径
             device: 设备，默认为自动检测
             num_gpus: 使用的GPU数量，默认为1
+            heva_device: HEVA 计算设备，默认为 None (与 model 相同)
         """
         self.device = device or get_device()
         self.model_path = model_path
         self.num_gpus = num_gpus
+        # HEVA 计算设备：如果指定，则把 HEVA 计算转移到另一张卡
+        self.heva_device = heva_device if heva_device else self.device
 
         log_print(f"Loading model from {model_path}...")
         log_print(f"Using device: {self.device}")
+        log_print(f"HEVA will be computed on: {self.heva_device}")
         log_print(f"Number of GPUs: {num_gpus}")
 
         # 根据设备类型和GPU数量设置 device_map
@@ -92,6 +97,78 @@ class Qwen3VLInference:
         self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
 
         log_print(f"Model loaded on {self.device}")
+
+        # 异步 HEVA 计算的线程池
+        self._heva_executor = ThreadPoolExecutor(max_workers=1)
+        self._pending_heva_futures = {}
+
+    def compute_heva_async(self, result_dict: dict, sample_idx: int):
+        """
+        异步计算 HEVA (在后台线程中计算)
+
+        Args:
+            result_dict: 推理结果字典，会被修改
+            sample_idx: 样本索引，用于追踪
+
+        Returns:
+            Future 对象
+        """
+        def _compute():
+            try:
+                full_logits = result_dict.get('logits')
+                full_attentions = result_dict.get('attentions')
+                visual_token_indices = result_dict.get('visual_token_indices')
+                prompt_length = result_dict.get('prompt_length')
+                generated_ids = result_dict.get('generated_ids')
+
+                if full_logits is None or full_attentions is None:
+                    return 0.0
+
+                # 移动到 HEVA 设备
+                heva_on_same_device = (self.heva_device == self.device)
+                if not heva_on_same_device:
+                    full_logits = full_logits.to(self.heva_device)
+                    full_attentions = tuple([att.to(self.heva_device) for att in full_attentions])
+                    visual_token_indices = visual_token_indices.to(self.heva_device)
+                    generated_ids = generated_ids.to(self.heva_device)
+
+                # 导入 HEVA 计算函数
+                from metrics.heva import compute_heva_from_result
+                heva_result = compute_heva_from_result({
+                    "logits": full_logits,
+                    "attentions": full_attentions,
+                    "visual_token_indices": visual_token_indices,
+                    "prompt_length": prompt_length,
+                    "input_ids": generated_ids,
+                }, alpha=0.2)
+
+                return heva_result['heva']
+            except Exception as e:
+                log_print(f"[ERROR] Async HEVA computation failed: {e}")
+                return 0.0
+
+        future = self._heva_executor.submit(_compute)
+        self._pending_heva_futures[sample_idx] = future
+        return future
+
+    def get_heva_result(self, sample_idx: int) -> float:
+        """
+        获取异步 HEVA 计算结果
+
+        Args:
+            sample_idx: 样本索引
+
+        Returns:
+            HEVA 值
+        """
+        if sample_idx in self._pending_heva_futures:
+            future = self._pending_heva_futures.pop(sample_idx)
+            return future.result()
+        return 0.0
+
+    def shutdown_heva_executor(self):
+        """关闭 HEVA 计算线程池"""
+        self._heva_executor.shutdown(wait=True)
 
     def get_visual_token_indices(self, input_ids: torch.Tensor) -> torch.Tensor:
         """
@@ -154,6 +231,8 @@ class Qwen3VLInference:
         top_k: int = 50,
         do_sample: bool = True,
         image_size: int = 448,
+        async_heva: bool = False,
+        sample_idx: int = 0,
     ) -> Dict[str, Any]:
         """
         带 attention 的生成
@@ -314,46 +393,93 @@ class Qwen3VLInference:
         # 计算 HEVA (使用完整序列的 logits 和 attention)
         heva_value = 0.0
         if full_logits is not None and full_attentions is not None:
-            try:
-                # 延迟导入避免循环依赖
-                import sys as _sys
-                if 'metrics.heva' in _sys.modules:
-                    from metrics.heva import compute_heva_from_result
-                else:
-                    from metrics.heva import compute_heva_from_result
+            # 立即释放原始设备上的 logits 和 attentions
+            # 以便下一个样本可以立即开始推理
+            if async_heva and self.heva_device != self.device:
+                # 异步模式 + 跨设备：立即转移数据并启动异步计算
+                heva_on_same_device = False
+            else:
+                heva_on_same_device = (self.heva_device == self.device)
 
-                # 使用完整序列的数据计算 HEVA
-                # visual_token_indices 基于输入，prompt_length 也是输入长度
-                # 但现在 full_logits 和 full_attentions 是完整序列
-                heva_result = compute_heva_from_result({
-                    "logits": full_logits,
-                    "attentions": full_attentions,
-                    "visual_token_indices": visual_token_indices,
-                    "prompt_length": prompt_length,
-                    "input_ids": generated_ids,
-                }, alpha=0.2)
-                heva_value = heva_result['heva']
+            if async_heva:
+                # 异步模式：启动后台线程计算 HEVA
+                result_for_heva = {
+                    'logits': full_logits,
+                    'attentions': full_attentions,
+                    'visual_token_indices': visual_token_indices,
+                    'prompt_length': prompt_length,
+                    'generated_ids': generated_ids,
+                }
+                # 启动异步计算
+                self.compute_heva_async(result_for_heva, sample_idx)
+                # 立即返回，HEVA 值稍后获取
+                # 注意：原始数据保存在 result_for_heva 中，由后台线程处理
+            else:
+                # 同步模式（原有逻辑）
+                try:
+                    # 如果 HEVA 使用不同设备，需要将数据转移到该设备
+                    if not heva_on_same_device:
+                        log_print(f"[DEBUG] Moving tensors to {self.heva_device} for HEVA computation...")
+                        full_logits_heva = full_logits.to(self.heva_device)
+                        full_attentions_heva = tuple([att.to(self.heva_device) for att in full_attentions])
+                        visual_token_indices_heva = visual_token_indices.to(self.heva_device)
+                        generated_ids_heva = generated_ids.to(self.heva_device)
+                        # 释放原始设备上的内存
+                        del full_attentions, full_logits
+                        if self.device != "cpu":
+                            if self.device == "cuda":
+                                torch.cuda.empty_cache()
+                            else:
+                                try:
+                                    import torch_npu
+                                    torch_npu.npu.empty_cache()
+                                except:
+                                    pass
+                    else:
+                        full_logits_heva = full_logits
+                        full_attentions_heva = full_attentions
+                        visual_token_indices_heva = visual_token_indices
+                        generated_ids_heva = generated_ids
 
-                # 打印 HEVA 结果详情
-                log_print(f"[DEBUG] HEVA computed: {heva_value}")
-                if 'selected_entropy_values' in heva_result:
-                    log_print(f"[DEBUG] Selected entropy values: {heva_result.get('selected_entropy_values', [])[:5]}...")
-                if 'visual_attentions' in heva_result:
-                    log_print(f"[DEBUG] Visual attentions: {heva_result.get('visual_attentions', [])[:5]}...")
+                    # 延迟导入避免循环依赖
+                    import sys as _sys
+                    if 'metrics.heva' in _sys.modules:
+                        from metrics.heva import compute_heva_from_result
+                    else:
+                        from metrics.heva import compute_heva_from_result
 
-                # HEVA 计算完成后释放内存
-                del full_attentions, full_logits
-                if self.device != "cpu":
-                    torch.cuda.empty_cache() if self.device == "cuda" else None
-                    try:
-                        import torch_npu
-                        torch_npu.npu.empty_cache()
-                    except:
-                        pass
-            except Exception as e:
-                import traceback
-                log_print(f"[ERROR] Failed to compute HEVA: {e}")
-                traceback.print_exc()
+                    # 使用完整序列的数据计算 HEVA
+                    heva_result = compute_heva_from_result({
+                        "logits": full_logits_heva,
+                        "attentions": full_attentions_heva,
+                        "visual_token_indices": visual_token_indices_heva,
+                        "prompt_length": prompt_length,
+                        "input_ids": generated_ids_heva,
+                    }, alpha=0.2)
+                    heva_value = heva_result['heva']
+
+                    # 打印 HEVA 结果详情
+                    log_print(f"[DEBUG] HEVA computed: {heva_value}")
+                    if 'selected_entropy_values' in heva_result:
+                        log_print(f"[DEBUG] Selected entropy values: {heva_result.get('selected_entropy_values', [])[:5]}...")
+                    if 'visual_attentions' in heva_result:
+                        log_print(f"[DEBUG] Visual attentions: {heva_result.get('visual_attentions', [])[:5]}...")
+
+                    # HEVA 计算完成后释放内存
+                    del full_logits_heva, full_attentions_heva
+                    if self.heva_device != "cpu":
+                        if self.heva_device == "cuda":
+                            torch.cuda.empty_cache()
+                        else:
+                            try:
+                                import torch_npu
+                                torch_npu.npu.empty_cache()
+                            except:
+                                pass
+                except Exception as e:
+                    import traceback
+                    log_print(f"[ERROR] Failed to compute HEVA: {e}")
+                    traceback.print_exc()
         else:
             log_print(f"[WARNING] full_logits or full_attentions is None, skipping HEVA computation")
             log_print(f"[DEBUG] full_logits: {full_logits}, full_attentions: {full_attentions}")
@@ -436,20 +562,21 @@ class Qwen3VLInference:
 _model_cache = {}
 
 
-def load_model(model_path: str = None, device: str = None, num_gpus: int = 1, reuse: bool = True) -> Qwen3VLInference:
+def load_model(model_path: str = None, device: str = None, num_gpus: int = 1, heva_device: str = None, reuse: bool = True) -> Qwen3VLInference:
     """加载模型的便捷函数，支持缓存复用和多卡"""
     import config
     if model_path is None:
         model_path = config.MODEL_DIR
 
     # 如果启用缓存且模型已加载，直接返回缓存的模型
-    cache_key = f"{model_path}_{device}_{num_gpus}"
+    # 注意：如果 heva_device 改变，需要重新加载
+    cache_key = f"{model_path}_{device}_{num_gpus}_{heva_device}"
     if reuse and cache_key in _model_cache:
         log_print(f"Reusing cached model: {model_path}")
         return _model_cache[cache_key]
 
     # 加载新模型
-    model = Qwen3VLInference(model_path, device, num_gpus)
+    model = Qwen3VLInference(model_path, device, num_gpus, heva_device)
 
     # 缓存模型
     if reuse:
