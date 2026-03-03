@@ -12,7 +12,6 @@ TEMPERATURE=0.7
 MAX_NEW_TOKENS=128
 TOP_P=0.9
 TOP_K=50
-IMAGE_SIZE=448
 MODEL_PATH=""
 NUM_GPUS=8
 HEVA_DEVICE=""
@@ -60,10 +59,6 @@ while [[ $# -gt 0 ]]; do
             TOP_K="$2"
             shift 2
             ;;
-        -i|--image_size)
-            IMAGE_SIZE="$2"
-            shift 2
-            ;;
         -o|--model_path)
             MODEL_PATH="$2"
             shift 2
@@ -92,9 +87,8 @@ while [[ $# -gt 0 ]]; do
             echo "  -m, --max_tokens    最大生成长度 (默认: 128)"
             echo "  -p, --top_p         top-p 采样 (默认: 0.9)"
             echo "  -k, --top_k         top-k 采样 (默认: 50)"
-            echo "  -i, --image_size    图像大小 (默认: 448)"
             echo "  -o, --model_path    模型路径 (默认: config.py 中的路径)"
-            echo "  -g, --num_gpus     GPU数量 (默认: 1)"
+            echo "  -g, --num_gpus     推理加速卡数量 (默认: 1)"
             echo "  --heva_device       HEVA计算设备 (默认: 与模型相同)"
             echo "  -h, --help          显示帮助信息"
             echo ""
@@ -131,8 +125,7 @@ echo "温度:        $TEMPERATURE"
 echo "最大长度:    $MAX_NEW_TOKENS"
 echo "top-p:       $TOP_P"
 echo "top-k:       $TOP_K"
-echo "图像大小:    $IMAGE_SIZE"
-echo "GPU数量:    $NUM_GPUS"
+echo "推理加速卡数量:    $NUM_GPUS"
 echo "HEVA设备:   $HEVA_DEVICE"
 echo "输出目录:    results/$EXP_NAME/<dataset>"
 echo "=========================================="
@@ -159,7 +152,6 @@ for ds in "${DATASETS[@]}"; do
         --max_new_tokens \"$MAX_NEW_TOKENS\" \
         --top_p \"$TOP_P\" \
         --top_k \"$TOP_K\" \
-        --image_size \"$IMAGE_SIZE\" \
         --num_gpus \"$NUM_GPUS\""
 
     # 如果指定了模型路径，添加到命令中

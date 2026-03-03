@@ -43,7 +43,7 @@ class Qwen3VLInference:
         Args:
             model_path: 模型路径
             device: 设备，默认为自动检测
-            num_gpus: 使用的GPU数量，默认为1
+            num_gpus: 推理使用的加速卡数量，默认为1
             heva_device: HEVA 计算设备，默认为 None (与 model 相同)
         """
         self.device = device or get_device()
@@ -57,7 +57,7 @@ class Qwen3VLInference:
         log_print(f"HEVA will be computed on: {self.heva_device}")
         log_print(f"Number of GPUs: {num_gpus}")
 
-        # 根据设备类型和GPU数量设置 device_map
+        # 根据设备类型和推理加速卡数量设置 device_map
         if num_gpus > 1:
             # 多卡模式：使用 device_map="auto" 自动分布到多个GPU
             device_map = "auto"
@@ -230,7 +230,6 @@ class Qwen3VLInference:
         top_p: float = 0.9,
         top_k: int = 50,
         do_sample: bool = True,
-        image_size: int = 448,
         async_heva: bool = False,
         sample_idx: int = 0,
     ) -> Dict[str, Any]:
@@ -246,7 +245,7 @@ class Qwen3VLInference:
             top_p: top-p 采样
             top_k: top-k 采样
             do_sample: 是否采样
-            image_size: 图像处理大小
+            (image_size 使用模型默认值)
 
         Returns:
             {

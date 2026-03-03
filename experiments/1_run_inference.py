@@ -23,7 +23,7 @@ from metrics.heva import compute_heva_from_result, validate_attention_normalizat
 
 
 def run_inference(model, dataset, sample_indices, output_dir,
-                  max_new_tokens=8192, temperature=0.7, top_p=0.9, top_k=50, do_sample=True, image_size=448):
+                  max_new_tokens=8192, temperature=0.7, top_p=0.9, top_k=50, do_sample=True):
     """
     运行推理并缓存结果 (流水线并行：推理和HEVA计算异步进行)
 
@@ -37,7 +37,6 @@ def run_inference(model, dataset, sample_indices, output_dir,
         top_p: top-p 采样
         top_k: top-k 采样
         do_sample: 是否采样
-        image_size: 图像处理大小
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -73,7 +72,6 @@ def run_inference(model, dataset, sample_indices, output_dir,
                     top_p=top_p,
                     top_k=top_k,
                     do_sample=do_sample,
-                    image_size=image_size,
                     async_heva=async_heva,
                     sample_idx=idx,
                 )
@@ -232,8 +230,7 @@ def main():
     parser.add_argument('--top_p', type=float, default=0.9, help='Top-p sampling')
     parser.add_argument('--top_k', type=int, default=50, help='Top-k sampling')
 
-    # 图像处理
-    parser.add_argument('--image_size', type=int, default=448, help='Image size for processing')
+    # 图像处理 (使用模型默认)
     parser.add_argument('--do_sample', action='store_true', default=True, help='Enable sampling')
 
     # 输出配置
@@ -274,7 +271,6 @@ def main():
         'temperature': args.temperature,
         'top_p': args.top_p,
         'top_k': args.top_k,
-        'image_size': args.image_size,
         'do_sample': args.do_sample,
     }
     config_path = os.path.join(args.output_dir, 'config.json')
@@ -316,7 +312,6 @@ def main():
         top_p=args.top_p,
         top_k=args.top_k,
         do_sample=args.do_sample,
-        image_size=args.image_size,
     )
 
 
