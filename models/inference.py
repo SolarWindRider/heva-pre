@@ -127,24 +127,16 @@ class Qwen3VLInference:
                 # 检查tensor实际设备，判断是否需要转移
                 target_device = result_dict.get('heva_device', 'cpu')
 
-                log_print(f"[DEBUG Async] full_logits.device: {full_logits.device}, target: {target_device}")
-
                 # 如果设备已经相同，就不需要转移
-                if str(full_logits.device) == str(target_device):
-                    pass  # 已经在目标设备上
-                else:
-                    log_print(f"[DEBUG Async] Moving tensors to {target_device}...")
+                if str(full_logits.device) != str(target_device):
                     # 需要转移数据到HEVA设备
                     full_logits = full_logits.to(target_device)
                     full_attentions = tuple([att.to(target_device) for att in full_attentions])
                     visual_token_indices = visual_token_indices.to(target_device)
                     generated_ids = generated_ids.to(target_device)
 
-                log_print(f"[DEBUG Async] After move - logits: {full_logits.device}, visual: {visual_token_indices.device}, generated_ids: {generated_ids.device}")
-
                 # 导入 HEVA 计算函数
                 from metrics.heva import compute_heva_from_result
-                log_print(f"[DEBUG Async] Calling compute_heva_from_result for all alpha values...")
 
                 # 计算所有 alpha 值的 HEVA
                 heva_dict = {}
@@ -158,12 +150,10 @@ class Qwen3VLInference:
                     }, alpha=alpha)
                     heva_dict[f'heva_{int(alpha*100)}'] = float(heva_result['heva'])
 
-                log_print(f"[DEBUG Async] compute_heva_from_result done! heva_dict={heva_dict}")
-
                 return heva_dict
             except Exception as e:
-                log_print(f"[ERROR] Async HEVA computation failed: {e}")
-                return 0.0
+                print(f"ERROR: Async HEVA computation failed: {e}")
+                return {'heva_20': 0.0}
 
         future = self._heva_executor.submit(_compute)
         self._pending_heva_futures[sample_idx] = future
@@ -396,14 +386,9 @@ class Qwen3VLInference:
             full_attentions = full_outputs.attentions  # Tuple of (1, num_heads, full_seq_len, full_seq_len)
             full_logits = full_outputs.logits.squeeze(0).detach()  # (full_seq_len, vocab_size)
 
-            # 打印调试信息
-            log_print(f"[DEBUG] full_logits shape: {full_logits.shape}")
-            log_print(f"[DEBUG] full_attentions layers: {len(full_attentions)}, first layer shape: {full_attentions[0].shape if full_attentions else 'None'}")
-            log_print(f"[DEBUG] visual_token_indices: {visual_token_indices[:10]}... (total: {len(visual_token_indices)})")
-            log_print(f"[DEBUG] prompt_length: {prompt_length}, generated_ids length: {len(generated_ids)}")
         except Exception as e:
             import traceback
-            log_print(f"[ERROR] Failed to get full sequence attention: {e}")
+            print(f"ERROR: Failed to get full sequence attention: {e}")
             traceback.print_exc()
 
         # 计算 HEVA (使用完整序列的 logits 和 attention)
@@ -429,7 +414,6 @@ class Qwen3VLInference:
                 try:
                     # 如果 HEVA 使用不同设备，需要将数据转移到该设备
                     if not heva_on_same_device:
-                        log_print(f"[DEBUG] Moving tensors to {self.heva_device} for HEVA computation...")
                         full_logits_heva = full_logits.to(self.heva_device)
                         full_attentions_heva = tuple([att.to(self.heva_device) for att in full_attentions])
                         visual_token_indices_heva = visual_token_indices.to(self.heva_device)
@@ -468,13 +452,6 @@ class Qwen3VLInference:
                     }, alpha=0.2)
                     heva_value = heva_result['heva']
 
-                    # 打印 HEVA 结果详情
-                    log_print(f"[DEBUG] HEVA computed: {heva_value}")
-                    if 'selected_entropy_values' in heva_result:
-                        log_print(f"[DEBUG] Selected entropy values: {heva_result.get('selected_entropy_values', [])[:5]}...")
-                    if 'visual_attentions' in heva_result:
-                        log_print(f"[DEBUG] Visual attentions: {heva_result.get('visual_attentions', [])[:5]}...")
-
                     # HEVA 计算完成后释放内存
                     del full_logits_heva, full_attentions_heva
                     if self.heva_device != "cpu":
@@ -488,11 +465,10 @@ class Qwen3VLInference:
                                 pass
                 except Exception as e:
                     import traceback
-                    log_print(f"[ERROR] Failed to compute HEVA: {e}")
+                    print(f"ERROR: Failed to compute HEVA: {e}")
                     traceback.print_exc()
         else:
-            log_print(f"[WARNING] full_logits or full_attentions is None, skipping HEVA computation")
-            log_print(f"[DEBUG] full_logits: {full_logits}, full_attentions: {full_attentions}")
+            print(f"WARNING: full_logits or full_attentions is None, skipping HEVA computation")
 
         return {
             "generated_text": generated_text,

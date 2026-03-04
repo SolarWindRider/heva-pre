@@ -152,16 +152,14 @@ def run_inference(model, dataset, sample_indices, output_dir,
                     'image_path': sample.get('image_path', ''),
                     'question': sample['question'],
                     'options': sample['options'],
-                    'raw_question': result.get('raw_question', ''),  # 问题+选项+JSON格式指令
-                    'prompt': result.get('prompt', ''),  # 喂给模型的完整prompt (含特殊token)
                     'ground_truth': sample['answer'],
                     'predicted_answer': answer_pred,
                     'generated_text': generated_text,
                     'correct': answer_pred != "" and answer_pred in sample['answer'].upper(),
-                    'heva': result.get('heva_dict', {}),  # HEVA 字典: {heva_10: x, heva_20: x, ..., heva_100: x}
                     'attention_validated': is_normalized,
                     'prompt_token_num': result['prompt_length'],
                     'gen_token_num': gen_token_num,
+                    'heva': result.get('heva_dict', {}),
                 }
 
                 # 保存元数据为json
@@ -201,7 +199,6 @@ def run_inference(model, dataset, sample_indices, output_dir,
                         # final_heva 现在是一个字典
                         if isinstance(final_heva, dict):
                             meta['heva'] = final_heva
-                            meta['heva_dict'] = final_heva
                         else:
                             meta['heva'] = {'heva_20': final_heva}
                             meta['heva_dict'] = {'heva_20': final_heva}
