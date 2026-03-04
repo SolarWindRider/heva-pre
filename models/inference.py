@@ -124,25 +124,43 @@ class Qwen3VLInference:
                 if full_logits is None or full_attentions is None:
                     return 0.0
 
-                # 移动到 HEVA 设备
-                heva_on_same_device = (self.heva_device == self.device)
-                if not heva_on_same_device:
-                    full_logits = full_logits.to(self.heva_device)
-                    full_attentions = tuple([att.to(self.heva_device) for att in full_attentions])
-                    visual_token_indices = visual_token_indices.to(self.heva_device)
-                    generated_ids = generated_ids.to(self.heva_device)
+                # 检查tensor实际设备，判断是否需要转移
+                target_device = result_dict.get('heva_device', 'cpu')
+
+                log_print(f"[DEBUG Async] full_logits.device: {full_logits.device}, target: {target_device}")
+
+                # 如果设备已经相同，就不需要转移
+                if str(full_logits.device) == str(target_device):
+                    pass  # 已经在目标设备上
+                else:
+                    log_print(f"[DEBUG Async] Moving tensors to {target_device}...")
+                    # 需要转移数据到HEVA设备
+                    full_logits = full_logits.to(target_device)
+                    full_attentions = tuple([att.to(target_device) for att in full_attentions])
+                    visual_token_indices = visual_token_indices.to(target_device)
+                    generated_ids = generated_ids.to(target_device)
+
+                log_print(f"[DEBUG Async] After move - logits: {full_logits.device}, visual: {visual_token_indices.device}, generated_ids: {generated_ids.device}")
 
                 # 导入 HEVA 计算函数
                 from metrics.heva import compute_heva_from_result
-                heva_result = compute_heva_from_result({
-                    "logits": full_logits,
-                    "attentions": full_attentions,
-                    "visual_token_indices": visual_token_indices,
-                    "prompt_length": prompt_length,
-                    "input_ids": generated_ids,
-                }, alpha=0.2)
+                log_print(f"[DEBUG Async] Calling compute_heva_from_result for all alpha values...")
 
-                return heva_result['heva']
+                # 计算所有 alpha 值的 HEVA
+                heva_dict = {}
+                for alpha in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
+                    heva_result = compute_heva_from_result({
+                        "logits": full_logits,
+                        "attentions": full_attentions,
+                        "visual_token_indices": visual_token_indices,
+                        "prompt_length": prompt_length,
+                        "input_ids": generated_ids,
+                    }, alpha=alpha)
+                    heva_dict[f'heva_{int(alpha*100)}'] = float(heva_result['heva'])
+
+                log_print(f"[DEBUG Async] compute_heva_from_result done! heva_dict={heva_dict}")
+
+                return heva_dict
             except Exception as e:
                 log_print(f"[ERROR] Async HEVA computation failed: {e}")
                 return 0.0
@@ -151,7 +169,7 @@ class Qwen3VLInference:
         self._pending_heva_futures[sample_idx] = future
         return future
 
-    def get_heva_result(self, sample_idx: int) -> float:
+    def get_heva_result(self, sample_idx: int):
         """
         获取异步 HEVA 计算结果
 
@@ -159,12 +177,12 @@ class Qwen3VLInference:
             sample_idx: 样本索引
 
         Returns:
-            HEVA 值
+            HEVA 字典或 0.0
         """
         if sample_idx in self._pending_heva_futures:
             future = self._pending_heva_futures.pop(sample_idx)
             return future.result()
-        return 0.0
+        return {'heva_20': 0.0}
 
     def shutdown_heva_executor(self):
         """关闭 HEVA 计算线程池"""
@@ -391,28 +409,22 @@ class Qwen3VLInference:
         # 计算 HEVA (使用完整序列的 logits 和 attention)
         heva_value = 0.0
         if full_logits is not None and full_attentions is not None:
-            # 立即释放原始设备上的 logits 和 attentions
-            # 以便下一个样本可以立即开始推理
-            if async_heva and self.heva_device != self.device:
-                # 异步模式 + 跨设备：立即转移数据并启动异步计算
-                heva_on_same_device = False
-            else:
-                heva_on_same_device = (self.heva_device == self.device)
-
+            # 异步模式下，始终由后台线程处理HEVA计算和设备转移
             if async_heva:
-                # 异步模式：启动后台线程计算 HEVA
                 result_for_heva = {
                     'logits': full_logits,
                     'attentions': full_attentions,
                     'visual_token_indices': visual_token_indices,
                     'prompt_length': prompt_length,
                     'generated_ids': generated_ids,
+                    'heva_device': self.heva_device,  # 传递目标设备
                 }
                 # 启动异步计算
                 self.compute_heva_async(result_for_heva, sample_idx)
                 # 立即返回，HEVA 值稍后获取
-                # 注意：原始数据保存在 result_for_heva 中，由后台线程处理
             else:
+                # 同步模式
+                heva_on_same_device = (str(full_logits.device) == self.heva_device)
                 # 同步模式（原有逻辑）
                 try:
                     # 如果 HEVA 使用不同设备，需要将数据转移到该设备

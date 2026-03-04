@@ -60,6 +60,22 @@ def run_inference(model, dataset, sample_indices, output_dir,
                     for r in results:
                         if r.get('_sample_idx') == prev_heva_idx:
                             r['heva'] = prev_heva
+                            # 同时更新保存的 JSON 文件
+                            if 'meta_path' in r:
+                                try:
+                                    with open(r['meta_path'], 'r', encoding='utf-8') as f:
+                                        meta = json.load(f)
+                                    # prev_heva 现在是一个字典
+                                    if isinstance(prev_heva, dict):
+                                        meta['heva'] = prev_heva
+                                        meta['heva_dict'] = prev_heva
+                                    else:
+                                        meta['heva'] = {'heva_20': prev_heva}
+                                        meta['heva_dict'] = {'heva_20': prev_heva}
+                                    with open(r['meta_path'], 'w', encoding='utf-8') as f:
+                                        json.dump(meta, f, ensure_ascii=False, indent=2)
+                                except Exception as e:
+                                    print(f"Warning: Failed to update JSON for idx {prev_heva_idx}: {e}")
                             break
 
                 # 运行推理（异步HEVA计算在内部启动）
@@ -92,13 +108,19 @@ def run_inference(model, dataset, sample_indices, output_dir,
                     print(f"Warning: No attention data for idx {idx}, proceeding without attention validation")
 
                 # 计算 HEVA (多个 alpha 值: 10% 到 100%)
-                # 注意：这里只计算不同alpha的HEVA，异步模式的alpha=0.2由后台线程计算
+                # 注意：异步模式下，同步HEVA计算使用第一次generate的结果（没有attention）
+                # 所以跳过同步计算，等待异步结果
                 try:
-                    heva_values = {}
-                    for alpha in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
-                        heva_result = compute_heva_from_result(result, alpha=alpha)
-                        heva_values[f'heva_{int(alpha*100)}'] = float(heva_result['heva'])
-                    result['heva_dict'] = heva_values
+                    if not async_heva:
+                        # 同步模式：直接计算HEVA
+                        heva_values = {}
+                        for alpha in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
+                            heva_result = compute_heva_from_result(result, alpha=alpha)
+                            heva_values[f'heva_{int(alpha*100)}'] = float(heva_result['heva'])
+                        result['heva_dict'] = heva_values
+                    else:
+                        # 异步模式：先跳过，等异步结果返回后再补充
+                        result['heva_dict'] = {f'heva_{int(a*100)}': None for a in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]}
                 except Exception as e:
                     print(f"Warning: Failed to compute HEVA for idx {idx}: {e}")
                     result['heva_dict'] = {f'heva_{int(a*100)}': 0.0 for a in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]}
@@ -135,7 +157,7 @@ def run_inference(model, dataset, sample_indices, output_dir,
                     'ground_truth': sample['answer'],
                     'predicted_answer': answer_pred,
                     'generated_text': generated_text,
-                    'correct': answer_pred in sample['answer'].upper(),
+                    'correct': answer_pred != "" and answer_pred in sample['answer'].upper(),
                     'heva': result.get('heva_dict', {}),  # HEVA 字典: {heva_10: x, heva_20: x, ..., heva_100: x}
                     'attention_validated': is_normalized,
                     'prompt_token_num': result['prompt_length'],
@@ -171,6 +193,22 @@ def run_inference(model, dataset, sample_indices, output_dir,
         for r in results:
             if r.get('_sample_idx') == prev_heva_idx:
                 r['heva'] = final_heva
+                # 同时更新保存的 JSON 文件
+                if 'meta_path' in r:
+                    try:
+                        with open(r['meta_path'], 'r', encoding='utf-8') as f:
+                            meta = json.load(f)
+                        # final_heva 现在是一个字典
+                        if isinstance(final_heva, dict):
+                            meta['heva'] = final_heva
+                            meta['heva_dict'] = final_heva
+                        else:
+                            meta['heva'] = {'heva_20': final_heva}
+                            meta['heva_dict'] = {'heva_20': final_heva}
+                        with open(r['meta_path'], 'w', encoding='utf-8') as f:
+                            json.dump(meta, f, ensure_ascii=False, indent=2)
+                    except Exception as e:
+                        print(f"Warning: Failed to update JSON for idx {prev_heva_idx}: {e}")
                 break
 
     # 保存索引文件

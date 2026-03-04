@@ -48,7 +48,8 @@ def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
 
 def compute_entropy_chunked(
     logits: torch.Tensor,
-    chunk_size: int = 256
+    chunk_size: int = 256,
+    move_to_cpu: bool = True,
 ) -> torch.Tensor:
     """
     分块计算 entropy (时间换空间，适用于显存不足的情况)
@@ -56,12 +57,16 @@ def compute_entropy_chunked(
     Args:
         logits: (seq_len, vocab_size)
         chunk_size: 每次处理的 token 数量
+        move_to_cpu: 是否将结果移到CPU以释放显存 (默认True)
 
     Returns:
         entropy: (seq_len,)
     """
     seq_len = logits.shape[0]
     entropies = []
+
+    # 保持原始设备
+    target_device = logits.device if not move_to_cpu else 'cpu'
 
     for start in range(0, seq_len, chunk_size):
         end = min(start + chunk_size, seq_len)
@@ -70,8 +75,11 @@ def compute_entropy_chunked(
         probs = F.softmax(chunk_logits, dim=-1)
         chunk_entropy = -torch.sum(probs * torch.log(probs + 1e-9), dim=-1)
 
-        # 立即移到 CPU 释放显存
-        entropies.append(chunk_entropy.cpu())
+        # 根据设置决定是否移到CPU
+        if move_to_cpu:
+            entropies.append(chunk_entropy.cpu())
+        else:
+            entropies.append(chunk_entropy.to(target_device))
         del chunk_logits, probs, chunk_entropy
 
     return torch.cat(entropies, dim=0)
@@ -184,6 +192,7 @@ def compute_heva_from_result(result: Dict[str, Any], alpha: float = 0.2) -> Dict
         HEVA 计算结果
     """
     import config
+    log_print(f"[HEVA] config imported, CHUNK_SIZE={config.CHUNK_SIZE}, USE_LAST_LAYER_ONLY={config.USE_LAST_LAYER_ONLY}")
 
     # 获取参数
     logits = result["logits"]
@@ -207,6 +216,8 @@ def compute_heva_from_result(result: Dict[str, Any], alpha: float = 0.2) -> Dict
         input_ids.shape[0] if hasattr(input_ids, 'shape') else len(input_ids)
     )
     log_print(f"[HEVA] seq_len (determined): {seq_len}")
+    log_print(f"[HEVA] logits device: {logits.device}")
+    log_print(f"[HEVA] attentions[0] device: {attentions[0].device if attentions else 'None'}")
 
     # 生成 token 从 prompt_length 开始，到序列结束
     # 确保 prompt_length 不超过 seq_len
@@ -215,24 +226,29 @@ def compute_heva_from_result(result: Dict[str, Any], alpha: float = 0.2) -> Dict
     else:
         gen_token_indices = torch.tensor([], dtype=torch.long, device=logits.device if logits is not None else 'cpu')
 
-    log_print(f"[HEVA] gen_token_indices: len={len(gen_token_indices)}, first 5: {gen_token_indices[:5].tolist() if len(gen_token_indices) > 0 else []}")
+    log_print(f"[HEVA] gen_token_indices device: {gen_token_indices.device}, len={len(gen_token_indices)}")
 
     # 检查 visual_token_indices 是否在有效范围内
+    log_print(f"[HEVA] visual_token_indices device: {visual_token_indices.device if visual_token_indices is not None else 'None'}")
     if visual_token_indices is not None and len(visual_token_indices) > 0:
         max_visual_idx = visual_token_indices.max().item() if len(visual_token_indices) > 0 else 0
         log_print(f"[HEVA] max visual_token_idx: {max_visual_idx}, seq_len: {seq_len}")
         if max_visual_idx >= seq_len:
             log_print(f"[ERROR] visual_token_indices contains indices >= seq_len! This will cause all-zero attention.")
 
+    log_print(f"[HEVA] config.CHUNK_SIZE: {config.CHUNK_SIZE}, config.USE_LAST_LAYER_ONLY: {config.USE_LAST_LAYER_ONLY}")
+
     # 如果序列很长，使用分块计算
     if seq_len > config.CHUNK_SIZE and config.USE_LAST_LAYER_ONLY:
+        log_print(f"[HEVA] Calling compute_heva_chunked (seq_len={seq_len} > CHUNK_SIZE={config.CHUNK_SIZE})")
         return compute_heva_chunked(
             logits=logits,
             attentions=attentions,
             visual_token_indices=visual_token_indices,
             gen_token_indices=gen_token_indices,
             alpha=alpha,
-            chunk_size=config.CHUNK_SIZE
+            chunk_size=config.CHUNK_SIZE,
+            move_entropy_to_cpu=False  # Keep on NPU device for async computation
         )
 
     return compute_heva(
@@ -308,6 +324,7 @@ def compute_heva_chunked(
     alpha: float = 0.2,
     chunk_size: int = 512,
     use_chunked_entropy: bool = True,
+    move_entropy_to_cpu: bool = True,
 ) -> Dict[str, Any]:
     """
     分块计算 HEVA（适用于超长序列，节省显存）
@@ -327,10 +344,19 @@ def compute_heva_chunked(
     Returns:
         HEVA 计算结果
     """
+    log_print(f"[HEVA chunked] Entering function...")
+    log_print(f"[HEVA chunked] logits device: {logits.device}")
+    log_print(f"[HEVA chunked] attentions[0] device: {attentions[0].device if attentions else 'None'}")
+    log_print(f"[HEVA chunked] visual_token_indices device: {visual_token_indices.device}")
+    log_print(f"[HEVA chunked] gen_token_indices device: {gen_token_indices.device}")
+    log_print(f"[HEVA chunked] use_chunked_entropy: {use_chunked_entropy}")
+
     # 1. 计算所有 token 的 entropy
     if use_chunked_entropy:
         # 使用分块版本节省显存 (时间换空间)
-        entropies = compute_entropy_chunked(logits, chunk_size=chunk_size)
+        log_print(f"[HEVA chunked] Calling compute_entropy_chunked with move_to_cpu={move_entropy_to_cpu}...")
+        entropies = compute_entropy_chunked(logits, chunk_size=chunk_size, move_to_cpu=move_entropy_to_cpu)
+        log_print(f"[HEVA chunked] compute_entropy_chunked done, entropies device: {entropies.device}")
     else:
         entropies = compute_entropy(logits)
 
