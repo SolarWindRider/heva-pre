@@ -55,7 +55,7 @@ class Qwen3VLInference:
         log_print(f"Loading model from {model_path}...")
         log_print(f"Using device: {self.device}")
         log_print(f"HEVA will be computed on: {self.heva_device}")
-        log_print(f"Number of GPUs: {num_gpus}")
+        log_print(f"Number of Accelerators: {num_gpus}")
 
         # 根据设备类型和推理加速卡数量设置 device_map
         if num_gpus > 1:
@@ -317,8 +317,12 @@ class Qwen3VLInference:
         else:
             prompt_length = len(input_ids[0])
 
-        # 生成 (同时获取 attention 和 logits，单次推理)
+        # 生成 (先生成文本，使用SDPA加速，不输出attention)
         with torch.no_grad():
+            # 临时切换到SDPA加速生成
+            original_attn = self.model.config._attn_implementation
+            self.model.config._attn_implementation = "sdpa"
+
             output = self.model.generate(
                 input_ids,
                 attention_mask=attention_mask,
@@ -330,9 +334,12 @@ class Qwen3VLInference:
                 top_k=top_k,
                 do_sample=do_sample,
                 return_dict_in_generate=True,
-                output_attentions=True,  # 输出 attention
+                output_attentions=False,  # 先生成文本，不输出attention节省显存
                 output_scores=True,     # 输出 logits
             )
+
+            # 恢复eager attention（用于后续HEVA计算）
+            self.model.config._attn_implementation = original_attn
 
         # 提取结果
         generated_ids = output.sequences[0]
@@ -344,23 +351,17 @@ class Qwen3VLInference:
         )[0]
         generated_text = generated_text.replace('<|im_end|>', '').replace('<|endoftext|>', '').strip()
 
-        # 提取 attention
-        attentions = output.attentions
-
-        # 从 generate 输出中提取 logits
-        # output.scores 是 (gen_len,) 元组，每个元素是 (1, vocab_size)
+        # 提取 logits (只需要用于返回)
         logits = None
         if output.scores is not None and len(output.scores) > 0:
-            # 转换为 (gen_len, vocab_size)
             logits = torch.cat([output.scores[i] for i in range(len(output.scores))], dim=0)
 
-        # ========== 修复: 获取完整序列的 logits 和 attention ==========
-        # generate() 返回的 logits/attention 只有生成部分
-        # 需要获取完整序列（包括输入）的表示来计算 HEVA
-        #
-        # 方法：使用 generated_ids 进行前向传播
-        # 注意：logits[i] 预测的是 generated_ids[i]，所以 logits 长度 = generated_ids 长度 - 1
-        # 需要将 logits 与 generated_ids 对齐
+        # 设置 attentions 为 None (因为不在 generate 时输出)
+        attentions = None
+
+        # ========== 先生成文本，后计算HEVA ==========
+        # 第一步：只生成文本（已完成）
+        # 第二步：用完整序列做前向传播获取attention来计算HEVA
         full_attentions = None
         full_logits = None
         try:
@@ -375,8 +376,6 @@ class Qwen3VLInference:
                     return_dict=True,
                 )
             full_attentions = full_outputs.attentions  # Tuple of (1, num_heads, full_seq_len, full_seq_len)
-            # logits[i] 预测 generated_ids[i]，所以需要取前 n 个 (n = len-1)
-            # 但为了简化，我们直接使用完整的 logits
             full_logits = full_outputs.logits.squeeze(0).detach()  # (full_seq_len, vocab_size)
 
             # 打印调试信息
