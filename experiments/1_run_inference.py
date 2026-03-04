@@ -68,10 +68,8 @@ def run_inference(model, dataset, sample_indices, output_dir,
                                     # prev_heva 现在是一个字典
                                     if isinstance(prev_heva, dict):
                                         meta['heva'] = prev_heva
-                                        meta['heva_dict'] = prev_heva
                                     else:
                                         meta['heva'] = {'heva_20': prev_heva}
-                                        meta['heva_dict'] = {'heva_20': prev_heva}
                                     with open(r['meta_path'], 'w', encoding='utf-8') as f:
                                         json.dump(meta, f, ensure_ascii=False, indent=2)
                                 except Exception as e:
@@ -146,15 +144,14 @@ def run_inference(model, dataset, sample_indices, output_dir,
                 # 准备元数据 (人类可读)
                 # gen_token_num = 完整生成序列长度 - prompt长度
                 gen_token_num = len(result['generated_ids']) - result['prompt_length']
+                prompt_text = result.get('prompt', '')
                 meta = {
                     'sample_id': sample_id,
-                    'idx': idx,
                     'image_path': sample.get('image_path', ''),
-                    'question': sample['question'],
-                    'options': sample['options'],
+                    'prompt': prompt_text,
+                    'generated_text': generated_text,
                     'ground_truth': sample['answer'],
                     'predicted_answer': answer_pred,
-                    'generated_text': generated_text,
                     'correct': answer_pred != "" and answer_pred in sample['answer'].upper(),
                     'attention_validated': is_normalized,
                     'prompt_token_num': result['prompt_length'],
@@ -201,7 +198,6 @@ def run_inference(model, dataset, sample_indices, output_dir,
                             meta['heva'] = final_heva
                         else:
                             meta['heva'] = {'heva_20': final_heva}
-                            meta['heva_dict'] = {'heva_20': final_heva}
                         with open(r['meta_path'], 'w', encoding='utf-8') as f:
                             json.dump(meta, f, ensure_ascii=False, indent=2)
                     except Exception as e:
