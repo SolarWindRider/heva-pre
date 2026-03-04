@@ -15,6 +15,7 @@ TOP_K=50
 MODEL_PATH=""
 NUM_GPUS=8
 HEVA_DEVICE=""
+ALPHA_VALUES=""
 
 # 解析命令行参数
 while [[ $# -gt 0 ]]; do
@@ -71,6 +72,10 @@ while [[ $# -gt 0 ]]; do
             HEVA_DEVICE="$2"
             shift 2
             ;;
+        -a|--alpha_values)
+            ALPHA_VALUES="$2"
+            shift 2
+            ;;
         -h|--help)
             echo "HEVA 实验启动脚本"
             echo ""
@@ -90,6 +95,7 @@ while [[ $# -gt 0 ]]; do
             echo "  -o, --model_path    模型路径 (默认: config.py 中的路径)"
             echo "  -g, --num_gpus     推理加速卡数量 (默认: 1)"
             echo "  --heva_device       HEVA计算设备 (默认: 与模型相同)"
+            echo "  -a, --alpha_values  HEVA alpha值列表，逗号分隔 (默认: 0.1,0.2,0.3)"
             echo "  -h, --help          显示帮助信息"
             echo ""
             echo "示例:"
@@ -97,6 +103,7 @@ while [[ $# -gt 0 ]]; do
             echo "  $0 -d VisuRiddles -n 10    # 处理 VisuRiddles 前10个样本"
             echo "  $0 -e exp002 -d RAVEN -n 100 -t 0.5  # 自定义实验"
             echo "  $0 --heva_device npu:1     # 使用npu:1计算HEVA"
+            echo "  $0 -a \"0.1,0.2,0.3\"       # 自定义alpha值"
             exit 0
             ;;
         *)
@@ -162,6 +169,10 @@ for ds in "${DATASETS[@]}"; do
     # 如果指定了HEVA计算设备，添加到命令中
     if [ -n "$HEVA_DEVICE" ]; then
         PYTHON_CMD="$PYTHON_CMD --heva_device \"$HEVA_DEVICE\""
+    fi
+
+    if [ -n "$ALPHA_VALUES" ]; then
+        PYTHON_CMD="$PYTHON_CMD --alpha_values \"$ALPHA_VALUES\""
     fi
 
     eval $PYTHON_CMD

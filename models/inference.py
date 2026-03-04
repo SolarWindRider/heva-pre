@@ -135,12 +135,15 @@ class Qwen3VLInference:
                     visual_token_indices = visual_token_indices.to(target_device)
                     generated_ids = generated_ids.to(target_device)
 
+                # 导入 HEVA 配置
+                import config
+
                 # 导入 HEVA 计算函数
                 from metrics.heva import compute_heva_from_result
 
-                # 计算所有 alpha 值的 HEVA
+                # 计算自定义 alpha 值的 HEVA
                 heva_dict = {}
-                for alpha in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
+                for alpha in config.ALPHA_VALUES:
                     heva_result = compute_heva_from_result({
                         "logits": full_logits,
                         "attentions": full_attentions,

@@ -17,6 +17,7 @@ from tqdm import tqdm
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import config
 from data.loader import load_dataset
 from models.inference import load_model
 from metrics.heva import compute_heva_from_result, validate_attention_normalization
@@ -105,23 +106,23 @@ def run_inference(model, dataset, sample_indices, output_dir,
                     result['attention_validated'] = False
                     print(f"Warning: No attention data for idx {idx}, proceeding without attention validation")
 
-                # 计算 HEVA (多个 alpha 值: 10% 到 100%)
+                # 计算 HEVA (使用自定义 alpha 值)
                 # 注意：异步模式下，同步HEVA计算使用第一次generate的结果（没有attention）
                 # 所以跳过同步计算，等待异步结果
                 try:
                     if not async_heva:
                         # 同步模式：直接计算HEVA
                         heva_values = {}
-                        for alpha in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
+                        for alpha in config.ALPHA_VALUES:
                             heva_result = compute_heva_from_result(result, alpha=alpha)
                             heva_values[f'heva_{int(alpha*100)}'] = float(heva_result['heva'])
                         result['heva_dict'] = heva_values
                     else:
                         # 异步模式：先跳过，等异步结果返回后再补充
-                        result['heva_dict'] = {f'heva_{int(a*100)}': None for a in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]}
+                        result['heva_dict'] = {f'heva_{int(a*100)}': None for a in config.ALPHA_VALUES}
                 except Exception as e:
                     print(f"Warning: Failed to compute HEVA for idx {idx}: {e}")
-                    result['heva_dict'] = {f'heva_{int(a*100)}': 0.0 for a in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]}
+                    result['heva_dict'] = {f'heva_{int(a*100)}': 0.0 for a in config.ALPHA_VALUES}
 
                 # 检查生成的答案
                 generated_text = result['generated_text']
@@ -271,8 +272,19 @@ def main():
     parser.add_argument('--model_path', type=str, default=None, help='Model path (default: from config.py)')
     parser.add_argument('--num_gpus', type=int, default=1, help='Number of GPUs to use')
     parser.add_argument('--heva_device', type=str, default=None, help='Device for HEVA computation (default: same as model device)')
+    parser.add_argument('--alpha_values', type=str, default=None, help='Comma-separated alpha values for HEVA (e.g., "0.1,0.2,0.3")')
 
     args = parser.parse_args()
+
+    # 解析 alpha_values 参数并覆盖 config.ALPHA_VALUES
+    if args.alpha_values is not None:
+        try:
+            alpha_list = [float(x.strip()) for x in args.alpha_values.split(',')]
+            config.ALPHA_VALUES = sorted(alpha_list)
+            print(f"[INFO] Using custom alpha values: {config.ALPHA_VALUES}")
+        except ValueError:
+            print(f"[ERROR] Invalid alpha_values format: {args.alpha_values}. Expected comma-separated numbers (e.g., '0.1,0.2,0.3')")
+            sys.exit(1)
 
     # 设置随机种子
     set_seed(args.seed)
@@ -303,6 +315,7 @@ def main():
         'top_p': args.top_p,
         'top_k': args.top_k,
         'do_sample': args.do_sample,
+        'alpha_values': config.ALPHA_VALUES,
     }
     config_path = os.path.join(args.output_dir, 'config.json')
     with open(config_path, 'w', encoding='utf-8') as f:
