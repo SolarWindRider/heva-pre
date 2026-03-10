@@ -131,7 +131,8 @@ class Qwen3VLInference:
                 if str(full_logits.device) != str(target_device):
                     # 需要转移数据到HEVA设备
                     full_logits = full_logits.to(target_device)
-                    full_attentions = tuple([att.to(target_device) for att in full_attentions])
+                    # 只保留最后一层attention，大幅减少显存使用
+                    full_attentions = tuple([full_attentions[-1].to(target_device)])
                     visual_token_indices = visual_token_indices.to(target_device)
                     generated_ids = generated_ids.to(target_device)
 
@@ -387,6 +388,8 @@ class Qwen3VLInference:
                     return_dict=True,
                 )
             full_attentions = full_outputs.attentions  # Tuple of (1, num_heads, full_seq_len, full_seq_len)
+            # 只保留最后一层，减少显存占用
+            full_attentions = (full_attentions[-1],)
             full_logits = full_outputs.logits.squeeze(0).detach()  # (full_seq_len, vocab_size)
 
         except Exception as e:
@@ -418,7 +421,8 @@ class Qwen3VLInference:
                     # 如果 HEVA 使用不同设备，需要将数据转移到该设备
                     if not heva_on_same_device:
                         full_logits_heva = full_logits.to(self.heva_device)
-                        full_attentions_heva = tuple([att.to(self.heva_device) for att in full_attentions])
+                        # 只保留最后一层attention，大幅减少显存使用
+                        full_attentions_heva = tuple([attentions[-1].to(self.heva_device)])
                         visual_token_indices_heva = visual_token_indices.to(self.heva_device)
                         generated_ids_heva = generated_ids.to(self.heva_device)
                         # 释放原始设备上的内存
