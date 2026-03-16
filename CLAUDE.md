@@ -27,6 +27,7 @@ experiments/         → Experiment scripts (1-7)
 ## Common Commands
 
 ```bash
+# Activate conda environment (REQUIRED)
 conda activate PyTorch-2.1.0
 
 # Run inference (generates attention weights)
@@ -79,6 +80,14 @@ where:
 - Visual-dependent samples: 0.1 ~ 0.3
 - Extreme visual dependency: > 0.4
 
+### Validation Checks (Important for Debugging)
+
+When implementing or modifying HEVA calculations, verify:
+
+1. **Attention normalization**: `attn_t.sum(dim=-1) ≈ 1` for each token
+2. **Visual token indices**: Print `input_ids[image_token_indices]` to confirm image embedding range
+3. **HEVA range**: If values are all > 0.8, token indices are likely incorrect
+
 ## Data Format
 
 Input JSON format:
@@ -94,10 +103,22 @@ Input JSON format:
 
 ## Paths (from config.py)
 
-- Model: `/home/ma-user/work/Downloads/Models/Qwen/Qwen3-VL-2B-Thinking`
-- Dataset: `/home/ma-user/work/datas/VisuRiddles`
+- Model: `../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking` (relative to project root)
+- Dataset: `../datas/VisuRiddles`
 - Results: `./results/`
 - Plots: `./plots/`
+- Tables: `./tables/`
+
+## Available Experiments
+
+- `1_run_inference.py` - Run inference with attention capture
+- `3_perturbation_exp.py` - Visual perturbation consistency
+- `4_group_analysis.py` - Visual vs language sample comparison
+- `5_causal_exp.py` - Causal sensitivity analysis
+- `6_temporal_analysis.py` - Temporal dynamics
+- `7_statistics.py` - Statistical analysis
+
+Note: Experiments 2 and 8 are not implemented.
 
 ## Dependencies
 

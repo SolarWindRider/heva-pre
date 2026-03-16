@@ -246,11 +246,7 @@ class Qwen3VLInference:
         sample_idx: int = 0,
     ) -> Dict[str, Any]:
         """
-        带 attention 的生成 - 增量计算版本（解决OOM问题）
-
-        核心思路：
-        1. Entropy: 直接用 generate 返回的 output.scores，不需要重新前向
-        2. Attention: 只计算 gen tokens -> visual tokens 的attention，不需要完整矩阵
+        带 attention 的生成
 
         Args:
             image: PIL Image
@@ -261,34 +257,41 @@ class Qwen3VLInference:
             top_p: top-p 采样
             top_k: top-k 采样
             do_sample: 是否采样
+            (image_size 使用模型默认值)
 
         Returns:
             {
                 "generated_text": str,
                 "generated_ids": torch.Tensor,
-                "logits": torch.Tensor,  # (gen_len, vocab_size)
-                "gen_to_visual_attentions": list,  # 新增：只保存 gen->visual 的attention
+                "logits": torch.Tensor,  # (seq_len, vocab_size)
+                "attentions": Tuple,    # (num_layers, batch, num_heads, seq_len, seq_len)
                 "input_ids": torch.Tensor,
                 "visual_token_indices": torch.Tensor,
-                "prompt_length": int,
-                "heva": float,
-                "prompt": str,
+                "gen_token_indices": torch.Tensor,
+                "prompt": str,  # 完整的prompt
             }
         """
-        # 构建prompt
+        # 构建prompt，参考用户提供的格式
         option_str = f"option: {options}\n" if options else ""
         full_question = question + option_str + 'Write the answer into a JSON form\n```json\n{"answer": "X"}```'
 
+        # 准备消息 (包含system message)
         messages = [
             {"role": "system", "content": "You are good at step by step reasoning."},
-            {"role": "user", "content": [
-                {"type": "image", "image": image},
-                {"type": "text", "text": full_question}
-            ]}
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": full_question}
+                ]
+            }
         ]
 
+        # 应用 chat template
         text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
+        # 处理输入
+        # 先不使用size参数，让processor自动处理图像
         inputs = self.processor(
             text=[text],
             images=[image],
@@ -300,119 +303,58 @@ class Qwen3VLInference:
         input_ids = inputs["input_ids"].to(self.device)
         attention_mask = inputs["attention_mask"].to(self.device)
         pixel_values = inputs["pixel_values"].to(self.device)
+        # 获取 image_grid_thw 用于视觉编码
         image_grid_thw = inputs.get("image_grid_thw", None)
         if image_grid_thw is not None:
             image_grid_thw = image_grid_thw.to(self.device)
 
         # 获取视觉 token 索引
+        # 在 Qwen3-VL 中，图像 token 在 input_ids 中是连续的
         visual_token_indices = self.get_visual_token_indices(input_ids[0])
 
         # 计算 prompt 长度
+        # 找到最后一个非图像 token 的位置，然后找到 user message 结束位置
+        # Qwen3-VL 使用 <|im_end|> 作为消息结束符
         if len(visual_token_indices) > 0:
+            # 找到图像 token 结束后的位置
             img_end = int(visual_token_indices[-1].item()) + 1
+            # 从这里继续找 <|im_end|> 标记
             input_ids_list = input_ids[0].tolist()
             try:
+                # 找到 <|im_end|> (151645) 的位置
                 prompt_length = input_ids_list.index(151645, img_end) + 1
             except ValueError:
+                # 如果找不到，使用图像 token 结束位置
                 prompt_length = img_end
         else:
             prompt_length = len(input_ids[0])
 
-        # ========== 增量计算 HEVA ==========
-        # 方案：使用 eager attention 逐步生成，同时捕获每一步的 attention
-        # 关键：只需要 gen token -> visual token 的 attention，不需要完整矩阵
-
-        # 保存生成的 logits (每个位置的 logits)
-        gen_logits_list = []  # List[torch.Tensor], 每个元素是 (vocab_size,)
-
-        # 保存 gen tokens 对 visual tokens 的 attention
-        # 只需要保存 gen_len 个位置的 visual attention
-        gen_to_visual_attentions = []  # List[float], 每个元素是一个 gen token 对所有 visual tokens 的注意力之和
-
-        # 使用 eager attention 进行自回归生成
-        original_attn = self.model.config._attn_implementation
-        self.model.config._attn_implementation = "eager"
-
-        # 准备初始输入
-        current_input_ids = input_ids
-        current_attention_mask = attention_mask
-
+        # 生成 (先生成文本，使用SDPA加速，不输出attention)
         with torch.no_grad():
-            # 逐步生成
-            for step in range(max_new_tokens):
-                # 前向传播，获取 logits 和 attention
-                outputs = self.model(
-                    input_ids=current_input_ids,
-                    attention_mask=current_attention_mask,
-                    pixel_values=pixel_values,
-                    image_grid_thw=image_grid_thw,
-                    output_attentions=True,
-                    return_dict=True,
-                )
+            # 临时切换到SDPA加速生成
+            original_attn = self.model.config._attn_implementation
+            self.model.config._attn_implementation = "sdpa"
 
-                # 获取最后一个位置的 logits
-                logits = outputs.logits[:, -1, :]  # (1, vocab_size)
-                gen_logits_list.append(logits.squeeze(0).detach())  # (vocab_size,)
+            output = self.model.generate(
+                input_ids,
+                attention_mask=attention_mask,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                do_sample=do_sample,
+                return_dict_in_generate=True,
+                output_attentions=False,  # 先生成文本，不输出attention节省显存
+                output_scores=True,     # 输出 logits
+            )
 
-                # 获取最后一层的 attention
-                # attention shape: (batch, num_heads, seq_len, seq_len)
-                attentions = outputs.attentions[-1]  # (1, num_heads, seq_len, seq_len)
+            # 恢复eager attention（用于后续HEVA计算）
+            self.model.config._attn_implementation = original_attn
 
-                # 提取 gen token (最后一个位置) 对 visual tokens 的 attention
-                # attentions[0, :, -1, :] 是最后一个位置对所有位置的 attention
-                # 我们只需要对 visual_token_indices 的注意力
-                if len(visual_token_indices) > 0:
-                    # 获取最后一个位置的 attention
-                    last_token_attn = attentions[0, :, -1, :]  # (num_heads, seq_len)
-
-                    # 只取 visual token 位置的 attention
-                    visual_attn = last_token_attn[:, visual_token_indices]  # (num_heads, num_visual)
-
-                    # 对 heads 取平均，然后对 visual tokens 求和
-                    visual_attn_sum = visual_attn.mean(dim=0).sum().item()  # float
-                    gen_to_visual_attentions.append(visual_attn_sum)
-                else:
-                    gen_to_visual_attentions.append(0.0)
-
-                # 采样下一个 token
-                if temperature > 0:
-                    _logits = logits / temperature
-                    if top_k > 0:
-                        indices_to_remove = _logits < torch.topk(_logits, top_k)[0][..., -1, None]
-                        _logits[indices_to_remove] = float('-inf')
-                    if top_p < 1.0:
-                        sorted_logits, sorted_indices = torch.sort(_logits, descending=True)
-                        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-                        sorted_indices_to_remove = cumulative_probs > top_p
-                        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-                        sorted_indices_to_remove[..., 0] = 0
-                        indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
-                        _logits[indices_to_remove] = float('-inf')
-
-                    probs = F.softmax(_logits, dim=-1)
-                    if do_sample:
-                        next_token = torch.multinomial(probs, num_samples=1)
-                    else:
-                        next_token = torch.argmax(probs, dim=-1, keepdim=True)
-                else:
-                    next_token = torch.argmax(logits, dim=-1, keepdim=True)
-
-                # 检查是否生成结束 (EOS: 151643 或 151645)
-                if next_token.item() in [151643, 151645, 151655]:
-                    break
-
-                # 扩展 input_ids 和 attention_mask
-                current_input_ids = torch.cat([current_input_ids, next_token], dim=1)
-                current_attention_mask = torch.cat([
-                    current_attention_mask,
-                    torch.ones((1, 1), dtype=torch.long, device=self.device)
-                ], dim=1)
-
-        # 恢复 attention 模式
-        self.model.config._attn_implementation = original_attn
-
-        # 组装结果
-        generated_ids = current_input_ids[0]
+        # 提取结果
+        generated_ids = output.sequences[0]
         gen_ids = generated_ids[prompt_length:]
 
         generated_text = self.processor.batch_decode(
@@ -421,36 +363,132 @@ class Qwen3VLInference:
         )[0]
         generated_text = generated_text.replace('<|im_end|>', '').replace('<|endoftext|>', '').strip()
 
-        # 合并 logits
-        gen_logits = torch.stack(gen_logits_list)  # (gen_len, vocab_size)
+        # 提取 logits (只需要用于返回)
+        logits = None
+        if output.scores is not None and len(output.scores) > 0:
+            logits = torch.cat([output.scores[i] for i in range(len(output.scores))], dim=0)
 
-        # 计算 HEVA
+        # 设置 attentions 为 None (因为不在 generate 时输出)
+        attentions = None
+
+        # ========== 先生成文本，后计算HEVA ==========
+        # 第一步：只生成文本（已完成）
+        # 第二步：用完整序列做前向传播获取attention来计算HEVA
+        full_attentions = None
+        full_logits = None
+        try:
+            full_input_ids = generated_ids.unsqueeze(0)  # (1, full_seq_len)
+            with torch.no_grad():
+                full_outputs = self.model(
+                    input_ids=full_input_ids,
+                    attention_mask=torch.ones_like(full_input_ids),
+                    pixel_values=pixel_values,
+                    image_grid_thw=image_grid_thw,
+                    output_attentions=True,
+                    return_dict=True,
+                )
+            full_attentions = full_outputs.attentions  # Tuple of (1, num_heads, full_seq_len, full_seq_len)
+            # 只保留最后一层，减少显存占用
+            full_attentions = (full_attentions[-1],)
+            full_logits = full_outputs.logits.squeeze(0).detach()  # (full_seq_len, vocab_size)
+
+        except Exception as e:
+            import traceback
+            print(f"ERROR: Failed to get full sequence attention: {e}")
+            traceback.print_exc()
+
+        # 计算 HEVA (使用完整序列的 logits 和 attention)
         heva_value = 0.0
-        if len(gen_to_visual_attentions) > 0 and len(gen_logits) > 0:
-            # 计算 entropy 来选择 top-alpha 的高熵 tokens
-            # 转换为 float32 计算 entropy
-            probs = F.softmax(gen_logits.float(), dim=-1)  # (gen_len, vocab_size)
-            entropy = -torch.sum(probs * torch.log(probs + 1e-9), dim=-1)  # (gen_len,)
+        if full_logits is not None and full_attentions is not None:
+            # 异步模式下，始终由后台线程处理HEVA计算和设备转移
+            if async_heva:
+                result_for_heva = {
+                    'logits': full_logits,
+                    'attentions': full_attentions,
+                    'visual_token_indices': visual_token_indices,
+                    'prompt_length': prompt_length,
+                    'generated_ids': generated_ids,
+                    'heva_device': self.heva_device,  # 传递目标设备
+                }
+                # 启动异步计算
+                self.compute_heva_async(result_for_heva, sample_idx)
+                # 立即返回，HEVA 值稍后获取
+            else:
+                # 同步模式
+                heva_on_same_device = (str(full_logits.device) == self.heva_device)
+                # 同步模式（原有逻辑）
+                try:
+                    # 如果 HEVA 使用不同设备，需要将数据转移到该设备
+                    if not heva_on_same_device:
+                        full_logits_heva = full_logits.to(self.heva_device)
+                        # 只保留最后一层attention，大幅减少显存使用
+                        full_attentions_heva = tuple([attentions[-1].to(self.heva_device)])
+                        visual_token_indices_heva = visual_token_indices.to(self.heva_device)
+                        generated_ids_heva = generated_ids.to(self.heva_device)
+                        # 释放原始设备上的内存
+                        del full_attentions, full_logits
+                        if self.device != "cpu":
+                            if self.device == "cuda":
+                                torch.cuda.empty_cache()
+                            else:
+                                try:
+                                    import torch_npu
+                                    torch_npu.npu.empty_cache()
+                                except:
+                                    pass
+                    else:
+                        full_logits_heva = full_logits
+                        full_attentions_heva = full_attentions
+                        visual_token_indices_heva = visual_token_indices
+                        generated_ids_heva = generated_ids
 
-            # 选取 top-alpha 高熵 tokens
-            alpha = 0.2
-            k = max(1, int(len(entropy) * alpha))
-            _, top_indices = torch.topk(entropy, k)
+                    # 延迟导入避免循环依赖
+                    import sys as _sys
+                    if 'metrics.heva' in _sys.modules:
+                        from metrics.heva import compute_heva_from_result
+                    else:
+                        from metrics.heva import compute_heva_from_result
 
-            # 计算这些高熵 tokens 的平均 visual attention
-            heva_value = sum(gen_to_visual_attentions[i] for i in top_indices.tolist()) / k
+                    # 使用完整序列的数据计算 HEVA
+                    heva_result = compute_heva_from_result({
+                        "logits": full_logits_heva,
+                        "attentions": full_attentions_heva,
+                        "visual_token_indices": visual_token_indices_heva,
+                        "prompt_length": prompt_length,
+                        "input_ids": generated_ids_heva,
+                    }, alpha=0.2)
+                    heva_value = heva_result['heva']
+
+                    # HEVA 计算完成后释放内存
+                    del full_logits_heva, full_attentions_heva
+                    if self.heva_device != "cpu":
+                        if self.heva_device == "cuda":
+                            torch.cuda.empty_cache()
+                        else:
+                            try:
+                                import torch_npu
+                                torch_npu.npu.empty_cache()
+                            except:
+                                pass
+                except Exception as e:
+                    import traceback
+                    print(f"ERROR: Failed to compute HEVA: {e}")
+                    traceback.print_exc()
+        else:
+            print(f"WARNING: full_logits or full_attentions is None, skipping HEVA computation")
 
         return {
             "generated_text": generated_text,
             "generated_ids": generated_ids,
-            "logits": gen_logits,
-            "gen_to_visual_attentions": gen_to_visual_attentions,
+            "logits": logits,  # 已经是 (seq_len, vocab_size) 格式
+            "attentions": attentions,
             "input_ids": input_ids[0],
+            "generated_ids": generated_ids,  # 完整的生成序列
             "visual_token_indices": visual_token_indices,
             "prompt_length": prompt_length,
             "heva": heva_value,
-            "prompt": text,
-            "raw_question": full_question,
+            "prompt": text,  # 完整的prompt字符串
+            "raw_question": full_question,  # 原始问题+选项+格式要求
         }
 
     def forward_with_attention(

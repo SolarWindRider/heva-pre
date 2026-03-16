@@ -223,7 +223,8 @@ def compute_heva_from_result(result: Dict[str, Any], alpha: float = 0.2) -> Dict
             gen_token_indices=gen_token_indices,
             alpha=alpha,
             chunk_size=config.CHUNK_SIZE,
-            move_entropy_to_cpu=False  # Keep on NPU device for async computation
+            move_entropy_to_cpu=False,  # Keep on NPU device for async computation
+            attention_chunk_size=config.ATTENTION_CHUNK_SIZE,  # 新增：attention分块大小
         )
 
     return compute_heva(
@@ -300,6 +301,7 @@ def compute_heva_chunked(
     chunk_size: int = 512,
     use_chunked_entropy: bool = True,
     move_entropy_to_cpu: bool = True,
+    attention_chunk_size: int = 256,  # 新增：对attention矩阵的分块大小
 ) -> Dict[str, Any]:
     """
     分块计算 HEVA（适用于超长序列，节省显存）
@@ -313,8 +315,9 @@ def compute_heva_chunked(
         visual_token_indices: 视觉 token 的索引
         gen_token_indices: 生成 token 的索引
         alpha: 高熵 token 的比例
-        chunk_size: 每批处理的 token 数量
+        chunk_size: 每批处理的 token 数量 (对selected_tokens分块)
         use_chunked_entropy: 是否使用分块计算 entropy (时间换空间)
+        attention_chunk_size: 对attention矩阵的行维度分块大小 (关键优化！)
 
     Returns:
         HEVA 计算结果
@@ -352,41 +355,66 @@ def compute_heva_chunked(
     num_heads = attn.shape[0]
     seq_len = attn.shape[1]
 
-    # 4. 分块计算
+    # 释放attentions元组的引用（不再需要）
+    del attentions
+
+    # 4. 真正的分块计算 - 对 seq_len 维度分块（关键优化！）
     visual_attentions = []
+    num_selected = len(selected_tokens)
 
-    if len(visual_token_indices) > 0:
-        visual_mask = torch.zeros(seq_len, dtype=torch.bool, device=attn.device)
-        visual_mask[visual_token_indices] = True
+    if num_selected > 0 and len(visual_token_indices) > 0:
+        # 预处理visual token索引 - 转为tensor以便快速计算
+        visual_tensor = visual_token_indices.to(attn.device)
 
-        # 分批处理
-        for start in range(0, len(selected_tokens), chunk_size):
-            end = min(start + chunk_size, len(selected_tokens))
-            chunk_tokens = selected_tokens[start:end]
+        # 关键优化：分块处理，每次只加载部分attention
+        for token_start in range(0, num_selected, chunk_size):
+            token_end = min(token_start + chunk_size, num_selected)
+            chunk_tokens = selected_tokens[token_start:token_end]  # (chunk_size,)
 
-            # 获取当前 chunk 的 attention
-            attn_chunk = attn[:, chunk_tokens, :]  # (num_heads, chunk_size, seq_len)
+            # 对seq_len维度分块 - 每次只处理attention的attention_chunk_size行
+            chunk_attn_list = []
 
-            # 扩展掩码
-            visual_mask_expanded = visual_mask.unsqueeze(0).unsqueeze(1)  # (1, 1, seq_len)
-            attn_chunk_masked = attn_chunk.masked_fill(~visual_mask_expanded, 0)
+            for seq_start in range(0, seq_len, attention_chunk_size):
+                seq_end = min(seq_start + attention_chunk_size, seq_len)
+                current_chunk_size = seq_end - seq_start
 
-            # 求和
-            visual_attn_sum = attn_chunk_masked.sum(dim=-1)  # (num_heads, chunk_size)
-            v_t = visual_attn_sum.mean(dim=0)  # (chunk_size,)
+                # 只取当前seq块内的attention
+                # attn[:, chunk_tokens, seq_start:seq_end] -> (num_heads, chunk_size, current_chunk_size)
+                chunk_attn = attn[:, chunk_tokens, seq_start:seq_end]
 
-            visual_attentions.extend(v_t.tolist())
+                # 标记哪些是visual token（使用向量化操作）
+                # visual_tensor在 [seq_start, seq_end) 范围内的
+                is_visual = (visual_tensor >= seq_start) & (visual_tensor < seq_end)
+                num_visual_in_chunk = is_visual.sum().item()
 
-            # 释放中间变量
-            del attn_chunk, attn_chunk_masked, visual_attn_sum
+                if num_visual_in_chunk > 0:
+                    # 计算在当前块内的visual token的偏移量
+                    visual_offsets = visual_tensor[is_visual] - seq_start  # (num_visual_in_chunk,)
+                    # 使用高级索引提取
+                    masked = chunk_attn[:, :, visual_offsets]  # (num_heads, chunk_size, num_visual_in_chunk)
+                    chunk_attn_list.append(masked)
+
+                del chunk_attn
+
+            if chunk_attn_list:
+                # 合并所有块
+                attn_visual = torch.cat(chunk_attn_list, dim=2)  # (num_heads, chunk_size, num_visual)
+                # 对heads求平均 -> (chunk_size, num_visual)
+                v_t = attn_visual.mean(dim=0)
+                # 对visual维度求和 -> (chunk_size,)
+                visual_attentions.extend(v_t.sum(dim=-1).tolist())
+
+                del attn_visual
+            else:
+                visual_attentions.extend([0.0] * len(chunk_tokens))
+
+            del chunk_tokens, chunk_attn_list
+            torch.cuda.empty_cache()  # 显式清理缓存
     else:
-        visual_attentions = [0.0] * len(selected_tokens)
+        visual_attentions = [0.0] * num_selected
 
     # 5. 计算 HEVA
     heva = np.mean(visual_attentions) if visual_attentions else 0.0
-
-    # 释放attentions内存 (NPU memory optimization)
-    del attentions
 
     return {
         "heva": heva,
