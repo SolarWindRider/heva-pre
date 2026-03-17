@@ -41,7 +41,15 @@ CHUNK_SIZE = 512  # 分块大小，当序列长度超过此值时分块计算
 
 # 关键优化：对attention矩阵的行维度分块大小（解决OOM的核心参数）
 # 默认为256，如果仍然OOM可以减小到128或64
-ATTENTION_CHUNK_SIZE = 256
+ATTENTION_CHUNK_SIZE = 2  # 减小到2，极致安全
+
+# Attention采样间隔 - 每隔N步计算一次attention（减少显存占用）
+# 值越大越省显存，但HEVA精度可能下降
+ATTENTION_INTERVAL = 4  # 保持较小间隔以保证精度
+
+# 最大计算attention的步数 - 超过此步数后不再计算attention（解决OOM的核心参数）
+# 设为较小的值（如100或200）可以大幅减少显存
+MAX_ATTENTION_STEPS = 20  # 进一步减少
 
 # 自定义HEVA计算的alpha值列表 (例如 [0.1, 0.2, 0.3] 计算 heva_10, heva_20, heva_30)
 ALPHA_VALUES = [0.1, 0.2, 0.3]

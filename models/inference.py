@@ -246,11 +246,11 @@ class Qwen3VLInference:
         sample_idx: int = 0,
     ) -> Dict[str, Any]:
         """
-        带 attention 的生成 - 增量计算版本（解决OOM问题）
+        带 attention 的生成 - 使用 KV Cache 优化版本
 
         核心思路：
-        1. Entropy: 直接用 generate 返回的 output.scores，不需要重新前向
-        2. Attention: 只计算 gen tokens -> visual tokens 的attention，不需要完整矩阵
+        1. 使用 HuggingFace generate() + use_cache=True 大幅减少显存
+        2. 生成后用单独的前向传播获取 attention（分段计算避免OOM）
 
         Args:
             image: PIL Image
@@ -318,117 +318,144 @@ class Qwen3VLInference:
         else:
             prompt_length = len(input_ids[0])
 
-        # ========== 增量计算 HEVA ==========
-        # 方案：使用 eager attention 逐步生成，同时捕获每一步的 attention
-        # 关键：只需要 gen token -> visual token 的 attention，不需要完整矩阵
+        # ========== 阶段1: 使用 generate() + KV Cache 生成文本 ==========
+        # 先只生成文本，不输出 attention，利用 KV Cache 大幅减少显存
+        import config
 
-        # 保存生成的 logits (每个位置的 logits)
-        gen_logits_list = []  # List[torch.Tensor], 每个元素是 (vocab_size,)
+        # 准备 generation config
+        generation_config = {
+            "max_new_tokens": max_new_tokens,
+            "temperature": temperature if temperature > 0 else 1.0,
+            "top_p": top_p,
+            "top_k": top_k if top_k > 0 else None,
+            "do_sample": do_sample,
+            "use_cache": True,  # 关键：启用 KV Cache
+            "pad_token_id": self.processor.tokenizer.pad_token_id or 151643,
+            "eos_token_id": [151643, 151645, 151655],
+        }
 
-        # 保存 gen tokens 对 visual tokens 的 attention
-        # 只需要保存 gen_len 个位置的 visual attention
-        gen_to_visual_attentions = []  # List[float], 每个元素是一个 gen token 对所有 visual tokens 的注意力之和
-
-        # 使用 eager attention 进行自回归生成
+        # 使用 eager attention
         original_attn = self.model.config._attn_implementation
         self.model.config._attn_implementation = "eager"
 
-        # 准备初始输入
-        current_input_ids = input_ids
-        current_attention_mask = attention_mask
+        with torch.no_grad():
+            # 生成（使用 KV Cache，显存大大减少）
+            outputs = self.model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+                return_dict_in_generate=True,
+                output_scores=True,  # 输出 scores 用于计算 entropy
+                **generation_config
+            )
+
+            # 获取生成结果
+            generated_ids = outputs.sequences[0]
+            gen_scores = outputs.scores  # List of (1, vocab_size)
+
+            # 获取生成的 token IDs（去掉 prompt 部分）
+            gen_ids = generated_ids[prompt_length:]
+
+            generated_text = self.processor.batch_decode(
+                gen_ids.unsqueeze(0) if gen_ids.dim() == 1 else gen_ids,
+                skip_special_tokens=False
+            )[0]
+            generated_text = generated_text.replace('<|im_end|>', '').replace('<|endoftext|>', '').strip()
+
+            # 合并 logits
+            gen_logits = torch.stack([s.squeeze(0) for s in gen_scores])  # (gen_len, vocab_size)
+
+            # 关键优化：生成完成后立即释放图像相关的大对象
+            # pixel_values 在后续不再需要，但会占用大量显存
+            del pixel_values
+            del image_grid_thw
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
+            else:
+                try:
+                    import torch_npu
+                    torch_npu.npu.empty_cache()
+                except:
+                    pass
+
+        # ========== 阶段2: 分段计算 attention ==========
+        # 从 config 读取参数
+        attention_interval = getattr(config, 'ATTENTION_INTERVAL', 8)
+        max_attention_steps = getattr(config, 'MAX_ATTENTION_STEPS', 50)
+        chunk_size = getattr(config, 'ATTENTION_CHUNK_SIZE', 256)  # 每段计算多少个 gen tokens
+
+        gen_to_visual_attentions = []
 
         with torch.no_grad():
-            # 逐步生成
-            for step in range(max_new_tokens):
-                # 前向传播，获取 logits 和 attention
-                outputs = self.model(
-                    input_ids=current_input_ids,
-                    attention_mask=current_attention_mask,
+            # 分段计算 attention，避免一次性处理过长序列
+            total_gen_len = len(gen_ids)
+
+            for start_idx in range(0, total_gen_len, chunk_size):
+                end_idx = min(start_idx + chunk_size, total_gen_len)
+
+                # 构造这段的 input_ids
+                segment_input_ids = generated_ids[:prompt_length + end_idx].unsqueeze(0)
+                segment_attention_mask = torch.ones(
+                    (1, prompt_length + end_idx), dtype=torch.long, device=self.device
+                )
+
+                # 计算这段的 attention
+                segment_output_attentions = self.model(
+                    input_ids=segment_input_ids,
+                    attention_mask=segment_attention_mask,
                     pixel_values=pixel_values,
                     image_grid_thw=image_grid_thw,
                     output_attentions=True,
                     return_dict=True,
                 )
 
-                # 获取最后一个位置的 logits
-                logits = outputs.logits[:, -1, :]  # (1, vocab_size)
-                gen_logits_list.append(logits.squeeze(0).detach())  # (vocab_size,)
+                # 只取最后 chunk_size 个位置的 attention
+                attentions = segment_output_attentions.attentions[-1]  # (1, heads, seq_len, seq_len)
 
-                # 获取最后一层的 attention
-                # attention shape: (batch, num_heads, seq_len, seq_len)
-                attentions = outputs.attentions[-1]  # (1, num_heads, seq_len, seq_len)
+                # 遍历这段的每个 gen token
+                for local_idx in range(start_idx, end_idx):
+                    # 只计算前 max_attention_steps 步的 attention
+                    if local_idx >= max_attention_steps and local_idx % attention_interval != 0:
+                        gen_to_visual_attentions.append(None)
+                        continue
 
-                # 提取 gen token (最后一个位置) 对 visual tokens 的 attention
-                # attentions[0, :, -1, :] 是最后一个位置对所有位置的 attention
-                # 我们只需要对 visual_token_indices 的注意力
-                if len(visual_token_indices) > 0:
-                    # 获取最后一个位置的 attention
-                    last_token_attn = attentions[0, :, -1, :]  # (num_heads, seq_len)
+                    # 对应的全局位置 = prompt_length + local_idx
+                    global_pos = prompt_length + local_idx
 
-                    # 只取 visual token 位置的 attention
-                    visual_attn = last_token_attn[:, visual_token_indices]  # (num_heads, num_visual)
-
-                    # 对 heads 取平均，然后对 visual tokens 求和
-                    visual_attn_sum = visual_attn.mean(dim=0).sum().item()  # float
-                    gen_to_visual_attentions.append(visual_attn_sum)
-                else:
-                    gen_to_visual_attentions.append(0.0)
-
-                # 采样下一个 token
-                if temperature > 0:
-                    _logits = logits / temperature
-                    if top_k > 0:
-                        indices_to_remove = _logits < torch.topk(_logits, top_k)[0][..., -1, None]
-                        _logits[indices_to_remove] = float('-inf')
-                    if top_p < 1.0:
-                        sorted_logits, sorted_indices = torch.sort(_logits, descending=True)
-                        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-                        sorted_indices_to_remove = cumulative_probs > top_p
-                        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-                        sorted_indices_to_remove[..., 0] = 0
-                        indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
-                        _logits[indices_to_remove] = float('-inf')
-
-                    probs = F.softmax(_logits, dim=-1)
-                    if do_sample:
-                        next_token = torch.multinomial(probs, num_samples=1)
+                    if len(visual_token_indices) > 0 and global_pos < attentions.shape[2]:
+                        # 提取这个位置对 visual tokens 的 attention
+                        last_token_attn = attentions[0, :, global_pos, :]  # (num_heads, seq_len)
+                        visual_attn = last_token_attn[:, visual_token_indices]  # (num_heads, num_visual)
+                        visual_attn_sum = visual_attn.mean(dim=0).sum().item()
+                        gen_to_visual_attentions.append(visual_attn_sum)
                     else:
-                        next_token = torch.argmax(probs, dim=-1, keepdim=True)
+                        gen_to_visual_attentions.append(0.0)
+
+                # 释放这段的 attention
+                del attentions
+                del segment_output_attentions
+
+                # 每段结束后清理缓存
+                if self.device == "cuda":
+                    torch.cuda.empty_cache()
                 else:
-                    next_token = torch.argmax(logits, dim=-1, keepdim=True)
-
-                # 检查是否生成结束 (EOS: 151643 或 151645)
-                if next_token.item() in [151643, 151645, 151655]:
-                    break
-
-                # 扩展 input_ids 和 attention_mask
-                current_input_ids = torch.cat([current_input_ids, next_token], dim=1)
-                current_attention_mask = torch.cat([
-                    current_attention_mask,
-                    torch.ones((1, 1), dtype=torch.long, device=self.device)
-                ], dim=1)
+                    try:
+                        import torch_npu
+                        torch_npu.npu.empty_cache()
+                    except:
+                        pass
 
         # 恢复 attention 模式
         self.model.config._attn_implementation = original_attn
 
-        # 组装结果
-        generated_ids = current_input_ids[0]
-        gen_ids = generated_ids[prompt_length:]
-
-        generated_text = self.processor.batch_decode(
-            gen_ids.unsqueeze(0) if gen_ids.dim() == 1 else gen_ids,
-            skip_special_tokens=False
-        )[0]
-        generated_text = generated_text.replace('<|im_end|>', '').replace('<|endoftext|>', '').strip()
-
-        # 合并 logits
-        gen_logits = torch.stack(gen_logits_list)  # (gen_len, vocab_size)
+        # 过滤掉 None 值
+        valid_attentions = [(i, attn) for i, attn in enumerate(gen_to_visual_attentions) if attn is not None]
 
         # 计算 HEVA
         heva_value = 0.0
-        if len(gen_to_visual_attentions) > 0 and len(gen_logits) > 0:
+        if len(valid_attentions) > 0 and len(gen_logits) > 0:
             # 计算 entropy 来选择 top-alpha 的高熵 tokens
-            # 转换为 float32 计算 entropy
             probs = F.softmax(gen_logits.float(), dim=-1)  # (gen_len, vocab_size)
             entropy = -torch.sum(probs * torch.log(probs + 1e-9), dim=-1)  # (gen_len,)
 
@@ -437,8 +464,13 @@ class Qwen3VLInference:
             k = max(1, int(len(entropy) * alpha))
             _, top_indices = torch.topk(entropy, k)
 
-            # 计算这些高熵 tokens 的平均 visual attention
-            heva_value = sum(gen_to_visual_attentions[i] for i in top_indices.tolist()) / k
+            # 只计算那些有有效 attention 的 token
+            valid_indices_set = set(i for i, _ in valid_attentions)
+            valid_top_indices = [i for i in top_indices.tolist() if i in valid_indices_set]
+
+            if len(valid_top_indices) > 0:
+                valid_attn_dict = dict(valid_attentions)
+                heva_value = sum(valid_attn_dict[i] for i in valid_top_indices) / len(valid_top_indices)
 
         return {
             "generated_text": generated_text,

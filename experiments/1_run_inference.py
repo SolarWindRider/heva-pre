@@ -112,9 +112,14 @@ def run_inference(model, dataset, sample_indices, output_dir,
                 'heva': heva_value,
             })
 
+            # 打印进度
+            print(f"[{idx}] Saved to {meta_path}, HEVA={heva_value:.4f}, gen_tokens={gen_token_num}")
+
         except Exception as e:
             errors.append({'idx': idx, 'error': str(e)})
             print(f"Error at idx {idx}: {e}")
+            import traceback
+            traceback.print_exc()
 
     # 保存索引文件
     index_path = os.path.join(output_dir, 'index.json')
