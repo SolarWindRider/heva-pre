@@ -87,7 +87,6 @@ def generate_with_attn(
     question: str,
     options: str,
     max_new_tokens: int,
-    alpha_values: list[float],
     temperature: float = 0.7,
     top_p: float = 0.9,
     top_k: int = 50,

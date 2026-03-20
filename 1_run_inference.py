@@ -23,7 +23,6 @@ def run_inference(
     sample_indices,
     output_dir,
     max_new_tokens=8192,
-    alpha_values=[0.2],
     temperature=0.7,
     top_p=0.9,
     top_k=50,
@@ -36,14 +35,14 @@ def run_inference(
         model_path: 模型路径
         dataset: 数据集
         sample_indices: 样本索引列表
-        output_dir: 输出目录 (results/{dataset}/)
+        output_dir: 输出目录 (results/{exp_name}/{dataset}/)
         max_new_tokens: 最大生成长度
         temperature: 温度
         top_p: top-p 采样
         top_k: top-k 采样
         do_sample: 是否采样
     """
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(f"{output_dir}/pkls", exist_ok=True)
     model, processor = load_model_processor(model_path)
     results = []
     errors = []
@@ -59,7 +58,6 @@ def run_inference(
                 question=sample["question"],
                 options=sample["options"],
                 max_new_tokens=max_new_tokens,
-                alpha_values=alpha_values,
                 temperature=temperature,
                 top_p=top_p,
                 top_k=top_k,
@@ -90,8 +88,8 @@ def run_inference(
             # 清理sample_id中的非法文件名字符
             sample_id = sample_id.replace("/", "_").replace("\\", "_").replace(":", "_")
 
-            gen_vattn_path = os.path.join(output_dir, f"{idx}_gen_vattn.pkl")
-            gen_entropy_path = os.path.join(output_dir, f"{idx}_gen_entropy.pkl")
+            gen_vattn_path = os.path.join(output_dir, f"pkls/{idx}_gen_vattn.pkl")
+            gen_entropy_path = os.path.join(output_dir, f"pkls/{idx}_gen_entropy.pkl")
             # 准备元数据 (人类可读)
             meta = {
                 "idx": idx,
@@ -182,20 +180,20 @@ def main():
     parser = argparse.ArgumentParser(description="Run inference on multimodal dataset")
 
     # 实验配置
-    parser.add_argument("--exp_name", type=str, default="exp002", help="Experiment name (default: exp001)")
+    parser.add_argument("--exp_name", type=str, default="exp001", help="Experiment name (default: exp001)")
     parser.add_argument("--dataset", type=str, default="RAVEN", choices=SUPPORTED_DATASETS, help="Dataset name")
 
     # 采样配置
-    parser.add_argument("--num_samples", type=int, default=-1, help="Number of samples to process (-1 for all)")
-    parser.add_argument("--shuffle", type=str, default="false", choices=["true", "false"], help="Shuffle dataset before processing")
+    parser.add_argument("--num_samples", type=int, default=100, help="Number of samples to process (-1 for all)")
+    parser.add_argument("--shuffle", type=str, default="true", choices=["true", "false"], help="Shuffle dataset before processing")
     # parser.add_argument("--batch_size", type=int, default=1, help="Batch size for inference")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     # 模型超参数
-    parser.add_argument("--max_new_tokens", type=int, default=57, help="Max new tokens for generation")
-    parser.add_argument("--temperature", type=float, default=0.7, help="Temperature for generation")
-    parser.add_argument("--top_p", type=float, default=0.9, help="Top-p sampling")
-    parser.add_argument("--top_k", type=int, default=50, help="Top-k sampling")
+    parser.add_argument("--max_new_tokens", type=int, default=12000, help="Max new tokens for generation")
+    parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for generation")
+    parser.add_argument("--top_p", type=float, default=1.0, help="Top-p sampling")
+    parser.add_argument("--top_k", type=int, default=40, help="Top-k sampling")  # 温度、topk、topp和Qwen3VL原文保持一致
 
     # 图像处理 (使用模型默认)
     parser.add_argument("--do_sample", action="store_true", default=True, help="Enable sampling")
@@ -205,11 +203,8 @@ def main():
 
     # 模型配置
     parser.add_argument("--model_path", type=str, default="../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking", help="Model path")
-    parser.add_argument("--alpha_values", type=str, default="0.2,0.8", help='Comma-separated alpha values for HEVA (e.g., "0.1,0.2,0.3")')
 
     args = parser.parse_args()
-
-    args.alpha_values = sorted([float(x) for x in args.alpha_values.split(",")], reverse=True)  # 从大到小排序，优先计算高alpha
 
     # 设置随机种子
     set_seed(args.seed)
@@ -237,7 +232,6 @@ def main():
         "top_p": args.top_p,
         "top_k": args.top_k,
         "do_sample": args.do_sample,
-        "alpha_values": args.alpha_values,
     }
     config_path = os.path.join(args.output_dir, "exp_config.json")
     with open(config_path, "w", encoding="utf-8") as f:
