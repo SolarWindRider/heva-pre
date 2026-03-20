@@ -1,23 +1,20 @@
-"""
-运行推理并缓存结果
-
-新格式：
-- results/{exp_name}/{dataset}/
-  - {sample_id}_meta.json (人类可读元数据)
-
-usage: python 1_run_inference.py [--exp_name EXP_NAME] [--dataset DATASET] [--num_samples N]
-"""
-
 import argparse
 import json
 import os
 import torch
 from tqdm import tqdm
-from metrics.inference import load_model_processor, generate_with_heva
+from metrics.inference import load_model_processor, generate_with_attn
 from data.loader import load_dataset
 import sys
+import pickle
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+
+# 立即刷新输出的打印函数
+def log_print(*args, **kwargs):
+    kwargs.setdefault("flush", True)
+    print(*args, **kwargs)
 
 
 def run_inference(
@@ -55,8 +52,7 @@ def run_inference(
         try:
             sample = dataset[idx]
 
-            # 运行推理（HEVA在生成过程中同步计算，不会OOM）
-            result = generate_with_heva(
+            result = generate_with_attn(
                 model=model,
                 processor=processor,
                 image=sample["image"],
@@ -72,10 +68,8 @@ def run_inference(
 
             # 检查结果是否有效
             if result is None:
-                print(f"Warning: Failed to get valid result for idx {idx}, skipping...")
+                log_print(f"Warning: Failed to get valid result for idx {idx}, skipping...")
                 continue
-
-            heva_value = result.get("heva", {"error": "HEVA computation failed"})  # 直接获取 HEVA 值
 
             # 检查生成的答案
             generated_text = result["generated_text"]
@@ -96,6 +90,8 @@ def run_inference(
             # 清理sample_id中的非法文件名字符
             sample_id = sample_id.replace("/", "_").replace("\\", "_").replace(":", "_")
 
+            gen_vattn_path = os.path.join(output_dir, f"{idx}_gen_vattn.pkl")
+            gen_entropy_path = os.path.join(output_dir, f"{idx}_gen_entropy.pkl")
             # 准备元数据 (人类可读)
             meta = {
                 "idx": idx,
@@ -106,7 +102,8 @@ def run_inference(
                 "correct": answer_pred != "" and answer_pred in sample["answer"].upper(),
                 "prompt_token_num": result["prompt_token_num"],
                 "gen_token_num": result["gen_token_num"],
-                "heva": heva_value,
+                "gen_entropy_path": gen_entropy_path,
+                "gen_vattn_path": gen_vattn_path,
                 "prompt": result["prompt_text"],
                 "generated_text": generated_text,
             }
@@ -123,13 +120,20 @@ def run_inference(
                     "meta_path": meta_path,
                 }
             )
+            # 保存熵和注意力为pkl
+
+            with open(gen_entropy_path, "wb") as f:
+                pickle.dump(result["gen_entropy"], f)
+
+            with open(gen_vattn_path, "wb") as f:
+                pickle.dump(result["gen_vattn"], f)
 
             # 打印进度
-            print(f"[{sample_id}] Saved to {meta_path}, HEVA={heva_value}")
+            log_print(f"[{sample_id}] Saved to {meta_path}")
 
         except Exception as e:
             errors.append({"idx": idx, "error": str(e)})
-            print(f"Error at idx {idx}: {e}")
+            log_print(f"Error at idx {idx}: {e}")
             import traceback
 
             traceback.print_exc()
@@ -148,9 +152,9 @@ def run_inference(
             indent=2,
         )
 
-    print(f"\nSaved {len(results)} results to {output_dir}")
-    print(f"Errors: {len(errors)}")
-    print(f"Index saved to: {index_path}")
+    log_print(f"\nSaved {len(results)} results to {output_dir}")
+    log_print(f"Errors: {len(errors)}")
+    log_print(f"Index saved to: {index_path}")
 
     return results, errors
 
@@ -169,7 +173,7 @@ def set_seed(seed: int):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-    print(f"Random seed set to: {seed}")
+    log_print(f"Random seed set to: {seed}")
 
 
 def main():
@@ -178,8 +182,8 @@ def main():
     parser = argparse.ArgumentParser(description="Run inference on multimodal dataset")
 
     # 实验配置
-    parser.add_argument("--exp_name", type=str, default="exp001", help="Experiment name (default: exp001)")
-    parser.add_argument("--dataset", type=str, default="VisuRiddles", choices=SUPPORTED_DATASETS, help="Dataset name")
+    parser.add_argument("--exp_name", type=str, default="exp002", help="Experiment name (default: exp001)")
+    parser.add_argument("--dataset", type=str, default="RAVEN", choices=SUPPORTED_DATASETS, help="Dataset name")
 
     # 采样配置
     parser.add_argument("--num_samples", type=int, default=-1, help="Number of samples to process (-1 for all)")
@@ -188,7 +192,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     # 模型超参数
-    parser.add_argument("--max_new_tokens", type=int, default=17, help="Max new tokens for generation")
+    parser.add_argument("--max_new_tokens", type=int, default=57, help="Max new tokens for generation")
     parser.add_argument("--temperature", type=float, default=0.7, help="Temperature for generation")
     parser.add_argument("--top_p", type=float, default=0.9, help="Top-p sampling")
     parser.add_argument("--top_k", type=int, default=50, help="Top-k sampling")
@@ -201,7 +205,7 @@ def main():
 
     # 模型配置
     parser.add_argument("--model_path", type=str, default="../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking", help="Model path")
-    parser.add_argument("--alpha_values", type=str, default="0.2", help='Comma-separated alpha values for HEVA (e.g., "0.1,0.2,0.3")')
+    parser.add_argument("--alpha_values", type=str, default="0.2,0.8", help='Comma-separated alpha values for HEVA (e.g., "0.1,0.2,0.3")')
 
     args = parser.parse_args()
 
@@ -223,8 +227,6 @@ def main():
         "dataset": args.dataset,
         "model_name": model_path.split("/")[-1],
         "model_path": model_path,
-        "num_gpus": args.num_gpus,
-        "heva_device": args.heva_device,
         "num_samples": args.num_samples,
         "shuffle": args.shuffle,
         # "batch_size": args.batch_size,
@@ -240,12 +242,12 @@ def main():
     config_path = os.path.join(args.output_dir, "exp_config.json")
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(exp_config, f, indent=2, ensure_ascii=False)
-    print(f"Config saved to: {config_path}")
+    log_print(f"Config saved to: {config_path}")
 
     # 加载数据
-    print(f"Loading dataset: {args.dataset}...")
+    log_print(f"Loading dataset: {args.dataset}...")
     dataset = load_dataset(args.dataset)
-    print(f"Dataset size: {len(dataset)}")
+    log_print(f"Dataset size: {len(dataset)}")
 
     # 确定样本索引
     # -1 表示处理全部样本
@@ -262,10 +264,10 @@ def main():
         random.seed(42)  # 固定随机种子保证可复现
         random.shuffle(sample_indices)
 
-    print(f"Processing samples 0 to {end_idx} ({len(sample_indices)} samples)")
-    print(f"Output directory: {args.output_dir}")
-    print(
-        f"Hyperparameters: max_new_tokens={args.max_new_tokens}, temperature={args.temperature}, top_p={args.top_p}, top_k={args.top_k}, num_gpus={args.num_gpus}"
+    log_print(f"Processing samples 0 to {end_idx} ({len(sample_indices)} samples)")
+    log_print(f"Output directory: {args.output_dir}")
+    log_print(
+        f"Hyperparameters: max_new_tokens={args.max_new_tokens}, temperature={args.temperature}, top_p={args.top_p}, top_k={args.top_k}"
     )
 
     # 运行推理

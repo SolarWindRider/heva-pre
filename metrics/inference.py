@@ -5,10 +5,11 @@ HEVA 模型推理模块
 """
 
 import torch
-from transformers import AutoModelForCausalLM, AutoProcessor
-from typing import Dict, Any, Tuple, Optional
-import torch.nn.functional as F
-from metrics.heva import compute_heva
+from typing import Dict, Any
+from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
+from metrics.heva import _sample_with_vattn_and_entropy
+
+Qwen3VLForConditionalGeneration._sample = _sample_with_vattn_and_entropy  # 替换原有的 _sample 方法，以便在生成过程中获取注意力权重和熵值
 
 
 # 立即刷新输出的打印函数
@@ -26,7 +27,7 @@ def load_model_processor(model_path: str):
         heva_device: HEVA 计算设备，默认为 None (与 model 相同)
     """
 
-    model = AutoModelForCausalLM.from_pretrained(
+    model = Qwen3VLForConditionalGeneration.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
         device_map="auto",
@@ -75,28 +76,12 @@ def get_visual_token_indices(input_ids: torch.Tensor, processor: AutoProcessor) 
 
     # 找出所有 image token 的位置
     visual_indices = (input_ids == image_token_id).nonzero(as_tuple=True)[0]
-
+    visual_indices = visual_indices[0], visual_indices[-1]
     return visual_indices
 
 
-def get_gen_token_indices(input_ids: torch.Tensor, prompt_length: int) -> torch.Tensor:
-    """
-    获取生成 token 的索引
-
-    Args:
-        input_ids: 输入的 token IDs
-        prompt_length: prompt 的长度（不包括图像 token）
-
-    Returns:
-        生成 token 索引
-    """
-    # 生成 token 从 prompt_length 开始
-    gen_indices = torch.arange(prompt_length, len(input_ids))
-    return gen_indices
-
-
-def generate_with_heva(
-    model: AutoModelForCausalLM,
+def generate_with_attn(
+    model: Qwen3VLForConditionalGeneration,
     processor: AutoProcessor,
     image: str,
     question: str,
@@ -164,11 +149,14 @@ def generate_with_heva(
         return_tensors="pt",
     )
     inputs.pop("token_type_ids", None)
+    inputs = inputs.to(model.device)
     prompt_token_num = inputs["input_ids"].shape[1]
 
     # 获取视觉 token 索引
-    visual_token_indices = get_visual_token_indices(inputs["input_ids"][0])
-
+    visual_token_indices = get_visual_token_indices(inputs["input_ids"][0], processor=processor)
+    model.visual_token_indices = visual_token_indices
+    model.gen_entropy = []
+    model.gen_vattn = []
     # 准备 generation config
     generation_config = {
         "max_new_tokens": max_new_tokens,
@@ -181,45 +169,21 @@ def generate_with_heva(
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            return_dict_in_generate=True,
-            output_logits=True,
-            output_attentions=True,
+            return_dict_in_generate=True,  # 必须为True才可以计算entropy和vattn
+            output_logits=True,  # 必须为True才可以计算entropy和vattn
+            output_attentions=True,  # 必须为True才可以计算entropy和vattn
             **generation_config,
         )
     gen_token_num = outputs.sequences.shape[1] - prompt_token_num
 
-    gen_entropies = []
-
-    for logits in outputs.logits:  # outputs.logits是(leng[tuple], batch, vocab_size)
-        gen_logits = logits[:, prompt_token_num:]  # (gen_len, vocab_size)
-        gen_log_probs = F.log_softmax(gen_logits, dim=-1)
-        entropy = -(gen_log_probs.exp() * gen_log_probs).sum(dim=-1)  # (B,)
-        gen_entropies.append(entropy)
-
-    gen_entropy = torch.stack(gen_entropies, dim=0)  # (T, B)
-
-
-    # 选取 top-alpha 高熵 tokens
-    top_alpha_token_indices_dic = {}
-    for alpha in alpha_values:
-        top_alpha_token_indices_dic[f"heva_{alpha:.2f}"] = torch.topk(gen_entropy, max(1, int(gen_entropy.shape[0] * alpha)), dim=0).indices  # (k, B)
-        top_alpha_token_indices = torch.topk(gen_entropy, max(1, int(gen_entropy.shape[0] * alpha)), dim=0).indices  # (k, B)
-        heva_result = compute_heva(
-            logits=outputs.logits[0],  # (seq_len, vocab_size)
-            attentions=[attn[0] for attn in outputs.attentions],  # List of (num_heads, seq_len, seq_len)
-            visual_token_indices=visual_token_indices,
-            gen_token_indices=get_gen_token_indices(inputs["input_ids"][0], prompt_token_num),
-            alpha=alpha,
-            use_last_layer_only=True,
-        )
-        heva_value = heva_result["heva"]
-        log_print(f"Alpha: {alpha:.2f}, HEVA: {heva_value:.4f}")
-
+    model.gen_entropy = torch.stack(model.gen_entropy, dim=1).detach().cpu()  # (gen_tokens_num, batch_size)
+    model.gen_vattn = torch.stack(model.gen_vattn, dim=1).detach().cpu()  # (gen_tokens_num, batch_size, visual_token_num)
 
     return {
         "prompt_text": processor.decode(inputs["input_ids"][0]),
         "generated_text": processor.decode(outputs.sequences[0][prompt_token_num:]),
         "prompt_token_num": prompt_token_num,
         "gen_token_num": gen_token_num,
-        "heva": heva_value,
+        "gen_entropy": model.gen_entropy,
+        "gen_vattn": model.gen_vattn,
     }
