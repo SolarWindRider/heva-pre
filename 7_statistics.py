@@ -1,3 +1,7 @@
+"""
+对1_run_inference.py结果的统计分析脚本
+"""
+
 import json
 import os
 from pathlib import Path
@@ -187,9 +191,9 @@ def analyze_response_length_correlation(exp_dir):
 
 
 # 分析token熵与视觉注意力的相关性
-def analyze_entropy_heva_correlation(exp_dir):
+def analyze_entropy_vattn_correlation(exp_dir):
     """
-    分析每个样本中token熵与视觉注意力(HEVA)的相关性
+    分析每个样本中token熵与视觉注意力(vattn)的相关性
 
     设计方案：
     1. 对每个样本，加载gen_entropy.pkl和gen_vattn.pkl
@@ -253,9 +257,7 @@ def analyze_entropy_heva_correlation(exp_dir):
                         vattn = vattn.float().squeeze().numpy()
 
                     # 确保长度一致
-                    min_len = min(len(entropy), len(vattn))
-                    entropy = entropy[:min_len]
-                    vattn = vattn[:min_len]
+                    assert len(entropy) == len(vattn), f"Length mismatch: entropy({len(entropy)}) vs vattn({len(vattn)}) in {json_file}"
 
                     # 计算相关系数
                     if len(entropy) > 10 and entropy.std() > 0 and vattn.std() > 0:
@@ -286,7 +288,7 @@ def analyze_entropy_heva_correlation(exp_dir):
     all_incorrect_correlations = np.array(all_incorrect_correlations)
 
     print(f"\n{'='*60}")
-    print("Token熵与视觉注意力(HEVA)相关性分析")
+    print("Token熵与视觉注意力(vattn)相关性分析")
     print(f"{'='*60}")
 
     # 整体统计
@@ -343,13 +345,13 @@ def analyze_entropy_heva_correlation(exp_dir):
 
 
 # 分析高熵token是否具有更高的视觉注意力
-def analyze_high_entropy_heva(exp_dir, top_percent=0.2):
+def analyze_high_entropy_vattn(exp_dir, top_percent=0.2):
     """
     分析高熵token是否具有更高的视觉注意力
 
     设计方案：
     1. 对每个样本，选取熵值最高的top_percent% tokens
-    2. 计算这些高熵token的平均视觉注意力 (即HEVA)
+    2. 计算这些高熵token的平均视觉注意力
     3. 计算剩余token的平均视觉注意力
     4. 比较两者的差异
 
@@ -362,8 +364,8 @@ def analyze_high_entropy_heva(exp_dir, top_percent=0.2):
     exp_path = Path(exp_dir)
 
     # 收集数据
-    all_heva_high_entropy = []  # 高熵token的平均视觉注意力
-    all_heva_low_entropy = []  # 低熵token的平均视觉注意力
+    all_vattn_high_entropy = []  # 高熵token的平均视觉注意力
+    all_vattn_low_entropy = []  # 低熵token的平均视觉注意力
     all_avg_entropy = []  # 样本平均熵
 
     bench_results = {}
@@ -373,8 +375,8 @@ def analyze_high_entropy_heva(exp_dir, top_percent=0.2):
             continue
 
         bench_name = bench_dir.name
-        heva_high_list = []
-        heva_low_list = []
+        vattn_high_list = []
+        vattn_low_list = []
         avg_entropy_list = []
 
         pkls_dir = bench_dir / "pkls"
@@ -408,42 +410,40 @@ def analyze_high_entropy_heva(exp_dir, top_percent=0.2):
                         vattn = pickle.load(f)
                         vattn = vattn.float().squeeze().numpy()
 
-                    min_len = min(len(entropy), len(vattn))
-                    entropy = entropy[:min_len]
-                    vattn = vattn[:min_len]
+                    assert len(entropy) == len(vattn), f"Length mismatch: entropy({len(entropy)}) vs vattn({len(vattn)}) in {json_file}"
 
                     if len(entropy) < 50:
                         continue
 
-                    # 计算HEVA：取熵值最高的top_percent% token
+                    # 取熵值最高和最低的top_percent% token
                     n_high = max(1, int(len(entropy) * top_percent))
                     high_entropy_indices = np.argsort(entropy)[-n_high:]
                     low_entropy_indices = np.argsort(entropy)[:-n_high]
 
-                    heva_high = vattn[high_entropy_indices].mean()
-                    heva_low = vattn[low_entropy_indices].mean()
+                    vattn_high = vattn[high_entropy_indices].mean()
+                    vattn_low = vattn[low_entropy_indices].mean()
 
-                    heva_high_list.append(heva_high)
-                    heva_low_list.append(heva_low)
+                    vattn_high_list.append(vattn_high)
+                    vattn_low_list.append(vattn_low)
                     avg_entropy_list.append(entropy.mean())
 
-                    all_heva_high_entropy.append(heva_high)
-                    all_heva_low_entropy.append(heva_low)
+                    all_vattn_high_entropy.append(vattn_high)
+                    all_vattn_low_entropy.append(vattn_low)
                     all_avg_entropy.append(entropy.mean())
 
             except Exception as e:
                 continue
 
-        if heva_high_list:
+        if vattn_high_list:
             bench_results[bench_name] = {
-                "heva_high": heva_high_list,
-                "heva_low": heva_low_list,
+                "vattn_high": vattn_high_list,
+                "vattn_low": vattn_low_list,
                 "avg_entropy": avg_entropy_list,
-                "diff": np.mean(heva_high_list) - np.mean(heva_low_list),
+                "diff": np.mean(vattn_high_list) - np.mean(vattn_low_list),
             }
 
-    all_heva_high_entropy = np.array(all_heva_high_entropy)
-    all_heva_low_entropy = np.array(all_heva_low_entropy)
+    all_vattn_high_entropy = np.array(all_vattn_high_entropy)
+    all_vattn_low_entropy = np.array(all_vattn_low_entropy)
     all_avg_entropy = np.array(all_avg_entropy)
 
     print(f"\n{'='*60}")
@@ -451,29 +451,29 @@ def analyze_high_entropy_heva(exp_dir, top_percent=0.2):
     print(f"{'='*60}")
 
     # 整体统计
-    print(f"\n整体统计 (N={len(all_heva_high_entropy)}):")
-    print(f"  高熵token平均HEVA: {np.mean(all_heva_high_entropy):.6f}")
-    print(f"  低熵token平均HEVA: {np.mean(all_heva_low_entropy):.6f}")
-    print(f"  差值 (高-低): {np.mean(all_heva_high_entropy) - np.mean(all_heva_low_entropy):.6f}")
-    print(f"  比值 (高/低): {np.mean(all_heva_high_entropy) / np.mean(all_heva_low_entropy):.4f}")
+    print(f"\n整体统计 (N={len(all_vattn_high_entropy)}):")
+    print(f"  高熵token平均视觉注意力: {np.mean(all_vattn_high_entropy):.6f}")
+    print(f"  低熵token平均视觉注意力: {np.mean(all_vattn_low_entropy):.6f}")
+    print(f"  差值 (高-低): {np.mean(all_vattn_high_entropy) - np.mean(all_vattn_low_entropy):.6f}")
+    print(f"  比值 (高/低): {np.mean(all_vattn_high_entropy) / np.mean(all_vattn_low_entropy):.4f}")
 
     # 统计检验
-    t_stat, p_value = stats.ttest_rel(all_heva_high_entropy, all_heva_low_entropy)
+    t_stat, p_value = stats.ttest_rel(all_vattn_high_entropy, all_vattn_low_entropy)
     print(f"\n配对t检验: t={t_stat:.4f}, p={p_value:.4e}")
 
-    # 计算样本级别的相关性：平均熵 vs HEVA
-    corr_entropy_heva, p_val = stats.pearsonr(all_avg_entropy, all_heva_high_entropy)
-    print(f"\n样本平均熵 vs 高熵token平均HEVA:")
-    print(f"  相关系数: {corr_entropy_heva:.4f}")
+    # 计算样本级别的相关性：平均熵 vs 平均视觉注意力
+    corr_entropy_vattn, p_val = stats.pearsonr(all_avg_entropy, all_vattn_high_entropy)
+    print(f"\n样本平均熵 vs 高熵token平均视觉注意力:")
+    print(f"  相关系数: {corr_entropy_vattn:.4f}")
     print(f"  P值: {p_val:.4e}")
 
     # 按benchmark统计
     print(f"\n各Benchmark统计:")
-    print(f"{'Benchmark':<20} {'High-HEVA':<12} {'Low-HEVA':<12} {'Diff':<12} {'Ratio':<10}")
+    print(f"{'Benchmark':<20} {'High-视觉注意力':<12} {'Low-视觉注意力':<12} {'Diff':<12} {'Ratio':<10}")
     print("-" * 66)
     for bench_name, stats_dict in sorted(bench_results.items()):
-        high_mean = np.mean(stats_dict["heva_high"])
-        low_mean = np.mean(stats_dict["heva_low"])
+        high_mean = np.mean(stats_dict["vattn_high"])
+        low_mean = np.mean(stats_dict["vattn_low"])
         diff = high_mean - low_mean
         ratio = high_mean / low_mean if low_mean > 0 else 0
         print(f"{bench_name:<20} {high_mean:<12.6f} {low_mean:<12.6f} {diff:<12.6f} {ratio:<10.4f}")
@@ -482,7 +482,7 @@ def analyze_high_entropy_heva(exp_dir, top_percent=0.2):
     print(f"\n" + "=" * 60)
     print("结论分析")
     print("=" * 60)
-    diff_mean = np.mean(all_heva_high_entropy) - np.mean(all_heva_low_entropy)
+    diff_mean = np.mean(all_vattn_high_entropy) - np.mean(all_vattn_low_entropy)
     if diff_mean > 0 and p_value < 0.05:
         print(f"✓ 高熵token的视觉注意力显著更高 (差值: {diff_mean:.6f})")
         print(f"  这支持HEVA的核心假设：高熵token更依赖视觉信息")
@@ -490,17 +490,17 @@ def analyze_high_entropy_heva(exp_dir, top_percent=0.2):
         print(f"✗ 高熵token的视觉注意力无显著差异 (差值: {diff_mean:.6f})")
 
     return {
-        "heva_high_entropy": all_heva_high_entropy,
-        "heva_low_entropy": all_heva_low_entropy,
+        "vattn_high_entropy": all_vattn_high_entropy,
+        "vattn_low_entropy": all_vattn_low_entropy,
         "avg_entropy": all_avg_entropy,
         "bench_results": bench_results,
     }
 
 
-# 分析高熵token的HEVA与回答正确性的关系
-def analyze_heva_correctness(exp_dir, top_percent=0.2):
+# 分析高熵token的视觉注意力与回答正确性的关系
+def analyze_vattn_correctness(exp_dir, top_percent=0.2):
     """
-    分析高熵token的HEVA与回答正确性的关系
+    分析高熵token的视觉注意力与回答正确性的关系
 
     设计方案：
     1. 对每个样本计算HEVA (高熵token的平均视觉注意力)
@@ -516,11 +516,11 @@ def analyze_heva_correctness(exp_dir, top_percent=0.2):
 
     exp_path = Path(exp_dir)
 
-    # 收集数据：HEVA, 正确性, 熵
-    all_heva = []  # 高熵token的平均视觉注意力 (即HEVA)
+    # 收集数据：视觉注意力, 正确性, 熵
+    all_vattn = []  # 高熵token的视觉注意力
     all_correct = []  # 是否正确
     all_avg_entropy = []  # 平均熵
-    all_heva_ratio = []  # 高熵token HEVA / 低熵token HEVA
+    all_vattn_ratio = []  # 高熵token 视觉注意力 / 低熵token 视觉注意力
 
     bench_results = {}
 
@@ -578,18 +578,18 @@ def analyze_heva_correctness(exp_dir, top_percent=0.2):
                     low_entropy_indices = np.argsort(entropy)[:-n_high]
 
                     heva = vattn[high_entropy_indices].mean()  # 即HEVA
-                    heva_low = vattn[low_entropy_indices].mean()
-                    heva_ratio = heva / heva_low if heva_low > 0 else 0
+                    vattn_low = vattn[low_entropy_indices].mean()
+                    heva_ratio = heva / vattn_low if vattn_low > 0 else 0
 
                     heva_list.append(heva)
                     correct_list.append(1 if correct else 0)
                     avg_entropy_list.append(entropy.mean())
                     heva_ratio_list.append(heva_ratio)
 
-                    all_heva.append(heva)
+                    all_vattn.append(heva)
                     all_correct.append(1 if correct else 0)
                     all_avg_entropy.append(entropy.mean())
-                    all_heva_ratio.append(heva_ratio)
+                    all_vattn_ratio.append(heva_ratio)
 
             except Exception as e:
                 continue
@@ -602,18 +602,18 @@ def analyze_heva_correctness(exp_dir, top_percent=0.2):
                 "heva_ratio": heva_ratio_list,
             }
 
-    all_heva = np.array(all_heva)
+    all_vattn = np.array(all_vattn)
     all_correct = np.array(all_correct)
     all_avg_entropy = np.array(all_avg_entropy)
-    all_heva_ratio = np.array(all_heva_ratio)
+    all_vattn_ratio = np.array(all_vattn_ratio)
 
     print(f"\n{'='*60}")
     print(f"高熵Token HEVA与回答正确性关系分析")
     print(f"{'='*60}")
 
     # 1. 计算HEVA与正确性的相关性
-    corr_heva_correct, p_val1 = stats.pearsonr(all_heva, all_correct)
-    corr_ratio_correct, p_val2 = stats.pearsonr(all_heva_ratio, all_correct)
+    corr_heva_correct, p_val1 = stats.pearsonr(all_vattn, all_correct)
+    corr_ratio_correct, p_val2 = stats.pearsonr(all_vattn_ratio, all_correct)
 
     print(f"\n1. HEVA与正确性相关性:")
     print(f"   HEVA vs 正确性: r={corr_heva_correct:.4f}, p={p_val1:.4e}")
@@ -621,10 +621,10 @@ def analyze_heva_correctness(exp_dir, top_percent=0.2):
 
     # 2. 按HEVA高低分组统计正确率
     print(f"\n2. 按HEVA高低分组统计正确率:")
-    heva_median = np.median(all_heva)
+    heva_median = np.median(all_vattn)
 
-    low_heva_mask = all_heva < heva_median
-    high_heva_mask = all_heva >= heva_median
+    low_heva_mask = all_vattn < heva_median
+    high_heva_mask = all_vattn >= heva_median
 
     low_heva_acc = all_correct[low_heva_mask].mean()
     high_heva_acc = all_correct[high_heva_mask].mean()
@@ -634,9 +634,9 @@ def analyze_heva_correctness(exp_dir, top_percent=0.2):
 
     # 3. 按HEVA四分位数分组
     print(f"\n3. 按HEVA四分位数分组:")
-    q25 = np.percentile(all_heva, 25)
-    q50 = np.percentile(all_heva, 50)
-    q75 = np.percentile(all_heva, 75)
+    q25 = np.percentile(all_vattn, 25)
+    q50 = np.percentile(all_vattn, 50)
+    q75 = np.percentile(all_vattn, 75)
 
     bins = [0, q25, q50, q75, float("inf")]
     labels = ["Q1(最低)", "Q2", "Q3", "Q4(最高)"]
@@ -645,7 +645,7 @@ def analyze_heva_correctness(exp_dir, top_percent=0.2):
     print(f"\n   {'分组':<12} {'正确率':<10} {'样本数':<10}")
     print(f"   {'-'*32}")
     for i in range(len(bins) - 1):
-        mask = (all_heva >= bins[i]) & (all_heva < bins[i + 1])
+        mask = (all_vattn >= bins[i]) & (all_vattn < bins[i + 1])
         if mask.sum() > 0:
             acc = all_correct[mask].mean()
             count = mask.sum()
@@ -653,10 +653,10 @@ def analyze_heva_correctness(exp_dir, top_percent=0.2):
 
     # 4. 按HEVA比值分组 (高熵token HEVA / 低熵token HEVA)
     print(f"\n4. 按HEVA比值分组 (高/低):")
-    ratio_median = np.median(all_heva_ratio)
+    ratio_median = np.median(all_vattn_ratio)
 
-    low_ratio_mask = all_heva_ratio < ratio_median
-    high_ratio_mask = all_heva_ratio >= ratio_median
+    low_ratio_mask = all_vattn_ratio < ratio_median
+    high_ratio_mask = all_vattn_ratio >= ratio_median
 
     low_ratio_acc = all_correct[low_ratio_mask].mean()
     high_ratio_acc = all_correct[high_ratio_mask].mean()
@@ -690,14 +690,14 @@ def analyze_heva_correctness(exp_dir, top_percent=0.2):
         print(f"○ HEVA与正确性无显著关联")
 
     return {
-        "heva": all_heva,
+        "vattn": all_vattn,
         "correct": all_correct,
-        "heva_ratio": all_heva_ratio,
+        "vattn_ratio": all_vattn_ratio,
         "bench_results": bench_results,
     }
 
 
-# 验证假设：高熵token的HEVA更高 -> 更容易回答正确
+# 验证假设：高熵token的视觉注意力更高 -> 更容易回答正确
 def verify_heva_hypothesis(exp_dir, top_percent=0.2):
     """
     验证假设：高熵token的HEVA更高更容易回答正确
@@ -762,14 +762,11 @@ def verify_heva_hypothesis(exp_dir, top_percent=0.2):
                         vattn = pickle.load(f)
                         vattn = vattn.float().squeeze().numpy()
 
-                    min_len = min(len(entropy), len(vattn))
-                    entropy = entropy[:min_len]
-                    vattn = vattn[:min_len]
-
+                    assert len(entropy) == len(vattn), f"Length mismatch: entropy({len(entropy)}) vs vattn({len(vattn)}) in {json_file}"
                     if len(entropy) < 50:
                         continue
 
-                    # 计算HEVA
+                    # 计算样本级HEVA
                     n_high = max(1, int(len(entropy) * top_percent))
                     high_entropy_indices = np.argsort(entropy)[-n_high:]
                     heva = vattn[high_entropy_indices].mean()
@@ -792,7 +789,7 @@ def verify_heva_hypothesis(exp_dir, top_percent=0.2):
     incorrect_heva = np.array(incorrect_heva)
 
     print(f"\n{'='*60}")
-    print("验证假设：高熵token的HEVA更高 -> 更容易回答正确")
+    print("验证假设：推理结果的HEVA更高 -> 更容易回答正确")
     print(f"{'='*60}")
 
     # 1. 基本统计
@@ -808,11 +805,11 @@ def verify_heva_hypothesis(exp_dir, top_percent=0.2):
     print(f"   独立样本t检验: t={t_stat:.4f}, p={t_pval:.4e}")
 
     # Mann-Whitney U检验 (非参数)
-    u_stat, u_pval = stats.mannwhitneyu(correct_heva, incorrect_heva, alternative='greater')
+    u_stat, u_pval = stats.mannwhitneyu(correct_heva, incorrect_heva, alternative="greater")
     print(f"   Mann-Whitney U检验 (单侧): U={u_stat:.1f}, p={u_pval:.4e}")
 
     # 效应量 (Cohen's d)
-    pooled_std = np.sqrt((correct_heva.std()**2 + incorrect_heva.std()**2) / 2)
+    pooled_std = np.sqrt((correct_heva.std() ** 2 + incorrect_heva.std() ** 2) / 2)
     cohens_d = (correct_heva.mean() - incorrect_heva.mean()) / pooled_std if pooled_std > 0 else 0
     print(f"   效应量 (Cohen's d): {cohens_d:.4f}")
     if abs(cohens_d) >= 0.8:
@@ -871,9 +868,9 @@ def verify_heva_hypothesis(exp_dir, top_percent=0.2):
             best_thresh = thresh
 
     # 5. 结论
-    print(f"\n" + "="*60)
+    print(f"\n" + "=" * 60)
     print("验证结论")
-    print("="*60)
+    print("=" * 60)
 
     if t_pval < 0.05 and correct_heva.mean() > incorrect_heva.mean():
         print(f"✓ 假设验证成功！")
@@ -908,11 +905,11 @@ def analyze_entropy_token_patterns(exp_dir, top_percent=0.2):
 
     # 收集数据
     all_entropy_positions = []  # 高熵token的位置分布 (相对位置 0-1)
-    all_entropy_values = []     # 高熵token的熵值
-    all_heva = []               # HEVA值
+    all_entropy_values = []  # 高熵token的熵值
+    all_heva = []  # HEVA值
 
     all_low_entropy_positions = []  # 低熵token的位置
-    all_low_entropy_values = []     # 低熵token的熵值
+    all_low_entropy_values = []  # 低熵token的熵值
 
     bench_stats = {}
 
@@ -1013,7 +1010,7 @@ def analyze_entropy_token_patterns(exp_dir, top_percent=0.2):
 
     # 按位置区间统计
     bins = [0, 0.25, 0.5, 0.75, 1.0]
-    labels = ['开头0-25%', '25-50%', '50-75%', '结尾75-100%']
+    labels = ["开头0-25%", "25-50%", "50-75%", "结尾75-100%"]
     print(f"\n   按位置区间分布:")
     for i in range(len(bins) - 1):
         mask = (all_entropy_positions >= bins[i]) & (all_entropy_positions < bins[i + 1])
@@ -1032,12 +1029,14 @@ def analyze_entropy_token_patterns(exp_dir, top_percent=0.2):
     # 3. 熵值分布
     print(f"\n3. 熵值分布:")
     print(f"   高熵token熵值: 均值={all_entropy_values.mean():.4f}, 范围=[{all_entropy_values.min():.4f}, {all_entropy_values.max():.4f}]")
-    print(f"   低熵token熵值: 均值={all_low_entropy_values.mean():.4f}, 范围=[{all_low_entropy_values.min():.4f}, {all_low_entropy_values.max():.4f}]")
+    print(
+        f"   低熵token熵值: 均值={all_low_entropy_values.mean():.4f}, 范围=[{all_low_entropy_values.min():.4f}, {all_low_entropy_values.max():.4f}]"
+    )
 
     # 4. 理解Instruct模型高熵token的含义
-    print(f"\n" + "="*60)
+    print(f"\n" + "=" * 60)
     print("Instruct模型高熵token含义推断")
-    print("="*60)
+    print("=" * 60)
 
     # 分析开头部分高熵token的比例
     head_ratio = (all_entropy_positions < 0.3).mean()
@@ -1076,7 +1075,7 @@ def analyze_high_entropy_text(exp_dir, top_percent=0.2, num_samples=5):
 
     # 加载分词器
     try:
-        tokenizer = AutoTokenizer.from_pretrained('../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking', trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained("../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking", trust_remote_code=True)
     except:
         print("Warning: Cannot load tokenizer, skipping text analysis")
         return
@@ -1146,23 +1145,23 @@ def analyze_high_entropy_text(exp_dir, top_percent=0.2, num_samples=5):
                     for idx in high_entropy_indices[:10]:
                         if idx < len(tokens):
                             token_text = tokenizer.decode([tokens[idx]])
-                            print(f"  [{idx:4d}] pos={idx/len(entropy):.3f}, entropy={entropy[idx]:.4f}, text=\"{token_text}\"")
+                            print(f'  [{idx:4d}] pos={idx/len(entropy):.3f}, entropy={entropy[idx]:.4f}, text="{token_text}"')
 
                     # 显示中间的高熵token
                     mid_start = len(high_entropy_indices) // 3
                     mid_end = 2 * len(high_entropy_indices) // 3
                     print(f"\n中间部分高熵token (中间10个):")
-                    for idx in high_entropy_indices[mid_start:mid_start+10]:
+                    for idx in high_entropy_indices[mid_start : mid_start + 10]:
                         if idx < len(tokens):
                             token_text = tokenizer.decode([tokens[idx]])
-                            print(f"  [{idx:4d}] pos={idx/len(entropy):.3f}, entropy={entropy[idx]:.4f}, text=\"{token_text}\"")
+                            print(f'  [{idx:4d}] pos={idx/len(entropy):.3f}, entropy={entropy[idx]:.4f}, text="{token_text}"')
 
                     # 显示结尾的高熵token
                     print(f"\n结尾部分高熵token (最后10个):")
                     for idx in high_entropy_indices[-10:]:
                         if idx < len(tokens):
                             token_text = tokenizer.decode([tokens[idx]])
-                            print(f"  [{idx:4d}] pos={idx/len(entropy):.3f}, entropy={entropy[idx]:.4f}, text=\"{token_text}\"")
+                            print(f'  [{idx:4d}] pos={idx/len(entropy):.3f}, entropy={entropy[idx]:.4f}, text="{token_text}"')
 
                     sample_count += 1
 
@@ -1173,9 +1172,9 @@ def analyze_high_entropy_text(exp_dir, top_percent=0.2, num_samples=5):
             break
 
     # 统计高频高熵token
-    print(f"\n" + "="*60)
+    print(f"\n" + "=" * 60)
     print("高频高熵Token统计")
-    print(f"="*60)
+    print(f"=" * 60)
 
     # 收集多个样本的高熵token
     all_high_tokens = []
@@ -1232,10 +1231,11 @@ def analyze_high_entropy_text(exp_dir, top_percent=0.2, num_samples=5):
 
     # 统计最常见的高熵token
     from collections import Counter
+
     token_counts = Counter(all_high_token_texts)
     print(f"\n最常见的高熵token (top 30):")
     for text, count in token_counts.most_common(30):
-        print(f"  \"{text}\": {count}")
+        print(f'  "{text}": {count}')
 
     return {}
 
@@ -1342,12 +1342,14 @@ def compare_thinking_vs_instruct(thinking_exp_dir, instruct_exp_dir, top_percent
         tail = (positions >= 0.7).mean() * 100
         print(f"   {name:<15} {head:<12.1f} {mid:<12.1f} {tail:<12.1f}")
 
-    print(f"\n" + "="*60)
+    print(f"\n" + "=" * 60)
     print("结论")
-    print("="*60)
+    print("=" * 60)
 
     if thinking_positions.mean() < instruct_positions.mean():
-        print(f"   Thinking模型: 高熵token更集中在回答{'' if thinking_positions.mean() < 0.3 else '中间'}偏{'' if thinking_positions.mean() < 0.3 else '后'}位置")
+        print(
+            f"   Thinking模型: 高熵token更集中在回答{'' if thinking_positions.mean() < 0.3 else '中间'}偏{'' if thinking_positions.mean() < 0.3 else '后'}位置"
+        )
         print(f"   → 这些位置可能对应模型'思考/推理'过程")
     else:
         print(f"   Instruct模型: 高熵token位置分布与Thinking不同")
@@ -1359,34 +1361,39 @@ def compare_thinking_vs_instruct(thinking_exp_dir, instruct_exp_dir, top_percent
 
 
 if __name__ == "__main__":
-    exp_dir = "./results/exp002"
+    exp_dir = "./results/exp001"
 
     # 统计ACC
     calculate_acc(exp_dir)
+    calculate_acc(exp_dir[:-1] + "2")
 
     # 分析回答长度与正确性相关性
     analyze_response_length_correlation(exp_dir)
+    analyze_response_length_correlation(exp_dir[:-1] + "2")
 
     # 分析token熵与视觉注意力相关性
-    analyze_entropy_heva_correlation(exp_dir)
+    analyze_entropy_vattn_correlation(exp_dir)
+    analyze_entropy_vattn_correlation(exp_dir[:-1] + "2")
 
     # 分析高熵token是否有更高的视觉注意力
-    analyze_high_entropy_heva(exp_dir)
+    analyze_high_entropy_vattn(exp_dir)
+    analyze_high_entropy_vattn(exp_dir[:-1] + "2")
 
     # 分析HEVA与回答正确性的关系
-    analyze_heva_correctness(exp_dir)
+    analyze_vattn_correctness(exp_dir)
+    analyze_vattn_correctness(exp_dir[:-1] + "2")
 
     # 验证假设：高熵token的HEVA更高 -> 更容易回答正确
     verify_heva_hypothesis(exp_dir)
+    verify_heva_hypothesis(exp_dir[:-1] + "2")
 
     # 分析高熵token的特征（理解Instruct模型）
     analyze_entropy_token_patterns(exp_dir)
+    analyze_entropy_token_patterns(exp_dir[:-1] + "2")
 
     # 分析高熵token对应的文本内容
-    analyze_high_entropy_text(exp_dir, top_percent=0.2, num_samples=3)
+    analyze_high_entropy_text(exp_dir, top_percent=0.2, num_samples=5)
+    analyze_high_entropy_text(exp_dir[:-1] + "2", top_percent=0.2, num_samples=5)
 
     # 对比Thinking vs Instruct模型
-    if "exp001" in exp_dir:
-        compare_thinking_vs_instruct("./results/exp001", "./results/exp002")
-    else:
-        compare_thinking_vs_instruct("./results/exp001", "./results/exp002")
+    compare_thinking_vs_instruct("./results/exp001", "./results/exp002")
