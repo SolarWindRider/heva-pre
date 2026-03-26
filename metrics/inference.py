@@ -44,40 +44,80 @@ def load_model_processor(model_path: str):
     return model, processor
 
 
-def get_visual_token_indices(input_ids: torch.Tensor, processor: AutoProcessor) -> torch.Tensor:
+def get_visual_token_indices(input_ids: torch.Tensor, processor: AutoProcessor) -> tuple:
     """
-    获取视觉 token 的索引
+    获取视觉 token 的索引范围
 
     在 Qwen3-VL 中:
     - image tokens 使用特殊的 token_id 表示
     - 需要根据 token_id 范围来确定视觉 token 位置
 
+    Args:
+        input_ids: 输入的 token ids，shape (batch_size, seq_len)
+        processor: 分词器
+
     Returns:
-        视觉 token 索引的 tensor
+        (start_indices, end_indices): tuple of tensors, each shape (batch_size,)
     """
-    # Qwen3-VL 的 image token ID 范围
-    # 查看 tokenizer 中的特殊 token
-    # 这里我们通过检查 input_ids 中是否有大量连续的 image token 来判断
-
-    # 获取 image token 的 token_id
-    # 在 Qwen3-VL 中，图像 token 通常在特定范围内
-    # 这里使用一个更通用的方法：通过 processor 获取 image token
-
-    # 尝试从 processor 获取 image token id
     try:
-        # Qwen3-VL 使用的 image token
         image_token_id = processor.tokenizer.additional_special_tokens_ids[
             processor.tokenizer.additional_special_tokens.index("<|image_pad|>")
         ]
     except (ValueError, KeyError):
-        # 如果找不到，使用默认值
-        # Qwen3-VL-2B 通常使用 151643 作为 image pad
         image_token_id = 151643
 
-    # 找出所有 image token 的位置
-    visual_indices = (input_ids == image_token_id).nonzero(as_tuple=True)[0]
-    visual_indices = visual_indices[0], visual_indices[-1]
-    return visual_indices
+    batch_size = input_ids.shape[0]
+    start_indices = []
+    end_indices = []
+
+    for b in range(batch_size):
+        visual_pos = (input_ids[b] == image_token_id).nonzero(as_tuple=True)[0]
+        if len(visual_pos) == 0:
+            start_indices.append(torch.tensor(0, device=input_ids.device))
+            end_indices.append(torch.tensor(0, device=input_ids.device))
+        else:
+            start_indices.append(visual_pos[0])
+            end_indices.append(visual_pos[-1])
+
+    return torch.stack(start_indices), torch.stack(end_indices)
+
+def get_input_token_indices(input_ids: torch.Tensor, processor: AutoProcessor) -> tuple:
+    """
+    获取输入序列 token 的索引范围（包含视觉 token）
+
+    用于区分生成 token 对 input tokens（文本+视觉）的注意力分布。
+    会排除 padding token，返回实际内容的位置范围。
+
+    Qwen3-VL chat template 结构：
+    [PAD...][System][User text]<|im_end|>[Visual][Assistant prefix]
+
+    Args:
+        input_ids: 输入的 token ids，shape (batch_size, seq_len)
+        processor: 分词器
+
+    Returns:
+        (start_indices, end_indices): tuple of tensors, each shape (batch_size,)
+    """
+    # 获取 pad token id
+    pad_token_id = processor.tokenizer.pad_token_id
+    if pad_token_id is None:
+        pad_token_id = processor.tokenizer.eos_token_id
+
+    batch_size = input_ids.shape[0]
+    start_indices = []
+    end_indices = []
+
+    for b in range(batch_size):
+        mask = input_ids[b] != pad_token_id
+        non_pad = mask.nonzero(as_tuple=True)[0]
+        if len(non_pad) == 0:
+            start_indices.append(torch.tensor(0, device=input_ids.device))
+            end_indices.append(torch.tensor(0, device=input_ids.device))
+        else:
+            start_indices.append(non_pad[0])
+            end_indices.append(non_pad[-1])
+
+    return torch.stack(start_indices), torch.stack(end_indices)
 
 
 def generate_with_attn(
@@ -151,11 +191,15 @@ def generate_with_attn(
     inputs = inputs.to(model.device)
     prompt_token_num = inputs["input_ids"].shape[1]
 
-    # 获取视觉 token 索引
-    visual_token_indices = get_visual_token_indices(inputs["input_ids"][0], processor=processor)
+    # 获取视觉 token 索引和输入 token 索引
+    visual_token_indices = get_visual_token_indices(inputs["input_ids"], processor=processor)
+    inputs_token_indices = get_input_token_indices(inputs["input_ids"], processor=processor)
     model.visual_token_indices = visual_token_indices
+    model.inputs_token_indices = inputs_token_indices
     model.gen_entropy = []
     model.gen_vattn = []
+    model.attn_acc_input = []
+    model.attn_acc_visual = []
     # 准备 generation config
     generation_config = {
         "max_new_tokens": max_new_tokens,
@@ -177,6 +221,8 @@ def generate_with_attn(
 
     model.gen_entropy = torch.stack(model.gen_entropy, dim=1).detach().cpu()  # (gen_tokens_num, batch_size)
     model.gen_vattn = torch.stack(model.gen_vattn, dim=1).detach().cpu()  # (gen_tokens_num, batch_size, visual_token_num)
+    model.attn_acc_input = torch.stack(model.attn_acc_input, dim=1).detach().cpu()  # (gen_tokens_num, batch_size)
+    model.attn_acc_visual = torch.stack(model.attn_acc_visual, dim=1).detach().cpu()  # (gen_tokens_num, batch_size)
 
     return {
         "prompt_text": processor.decode(inputs["input_ids"][0]),
@@ -185,4 +231,6 @@ def generate_with_attn(
         "gen_token_num": gen_token_num,
         "gen_entropy": model.gen_entropy,
         "gen_vattn": model.gen_vattn,
+        "attn_acc_input": model.attn_acc_input,
+        "attn_acc_visual": model.attn_acc_visual,
     }

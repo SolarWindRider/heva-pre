@@ -130,7 +130,7 @@ def analyze_response_length_correlation(exp_dir):
         print(f"{bench_name:<20} {stats_dict['avg_length']:<15.1f} {stats_dict['correct_rate']:<15.4f}")
 
     # 计算每个benchmark的相关性
-    print(f"\n各Benchmark相关性:")
+    print(f"\n各Benchmark回答长度与正确性的相关性:")
     print(f"{'Benchmark':<20} {'Correlation':<15} {'P-value':<15}")
     print("-" * 50)
     for bench_name, stats_dict in sorted(bench_results.items()):
@@ -143,7 +143,7 @@ def analyze_response_length_correlation(exp_dir):
             print(f"{bench_name:<20} {'N/A':<15} {'N/A':<15}")
 
     # 按长度区间统计正确率
-    print(f"\n按回答长度区间统计:")
+    print(f"\n按回答长度区间统计正确率:")
     bins = [0, 1000, 3000, 5000, 10000, float("inf")]
     labels = ["<1K", "1K-3K", "3K-5K", "5K-10K", ">10K"]
 
@@ -1035,7 +1035,7 @@ def analyze_entropy_token_patterns(exp_dir, top_percent=0.2):
 
     # 4. 理解Instruct模型高熵token的含义
     print(f"\n" + "=" * 60)
-    print("Instruct模型高熵token含义推断")
+    print("模型高熵token含义推断")
     print("=" * 60)
 
     # 分析开头部分高熵token的比例
@@ -1365,35 +1365,27 @@ if __name__ == "__main__":
 
     # 统计ACC
     calculate_acc(exp_dir)
-    calculate_acc(exp_dir[:-1] + "2")
 
     # 分析回答长度与正确性相关性
     analyze_response_length_correlation(exp_dir)
-    analyze_response_length_correlation(exp_dir[:-1] + "2")
 
     # 分析token熵与视觉注意力相关性
     analyze_entropy_vattn_correlation(exp_dir)
-    analyze_entropy_vattn_correlation(exp_dir[:-1] + "2")
 
     # 分析高熵token是否有更高的视觉注意力
     analyze_high_entropy_vattn(exp_dir)
-    analyze_high_entropy_vattn(exp_dir[:-1] + "2")
 
     # 分析HEVA与回答正确性的关系
     analyze_vattn_correctness(exp_dir)
-    analyze_vattn_correctness(exp_dir[:-1] + "2")
 
     # 验证假设：高熵token的HEVA更高 -> 更容易回答正确
     verify_heva_hypothesis(exp_dir)
-    verify_heva_hypothesis(exp_dir[:-1] + "2")
 
     # 分析高熵token的特征（理解Instruct模型）
     analyze_entropy_token_patterns(exp_dir)
-    analyze_entropy_token_patterns(exp_dir[:-1] + "2")
 
-    # 分析高熵token对应的文本内容
-    analyze_high_entropy_text(exp_dir, top_percent=0.2, num_samples=5)
-    analyze_high_entropy_text(exp_dir[:-1] + "2", top_percent=0.2, num_samples=5)
+    # # 分析高熵token对应的文本内容
+    # analyze_high_entropy_text(exp_dir, top_percent=0.2, num_samples=5)
 
-    # 对比Thinking vs Instruct模型
-    compare_thinking_vs_instruct("./results/exp001", "./results/exp002")
+    # # 对比Thinking vs Instruct模型
+    # compare_thinking_vs_instruct("./results/exp001", "./results/exp002")

@@ -95,6 +95,8 @@ def run_inference(
 
             gen_vattn_path = os.path.join(output_dir, f"pkls/{idx}_gen_vattn.pkl")
             gen_entropy_path = os.path.join(output_dir, f"pkls/{idx}_gen_entropy.pkl")
+            attn_acc_input_path = os.path.join(output_dir, f"pkls/{idx}_attn_acc_input.pkl")
+            attn_acc_visual_path = os.path.join(output_dir, f"pkls/{idx}_attn_acc_visual.pkl")
             # 准备元数据 (人类可读)
             meta = {
                 "idx": idx,
@@ -107,6 +109,8 @@ def run_inference(
                 "gen_token_num": result["gen_token_num"],
                 "gen_entropy_path": gen_entropy_path,
                 "gen_vattn_path": gen_vattn_path,
+                "attn_acc_input_path": attn_acc_input_path,
+                "attn_acc_visual_path": attn_acc_visual_path,
                 "prompt": result["prompt_text"],
                 "generated_text": generated_text,
             }
@@ -130,6 +134,12 @@ def run_inference(
 
             with open(gen_vattn_path, "wb") as f:
                 pickle.dump(result["gen_vattn"], f)
+
+            with open(attn_acc_input_path, "wb") as f:
+                pickle.dump(result["attn_acc_input"], f)
+
+            with open(attn_acc_visual_path, "wb") as f:
+                pickle.dump(result["attn_acc_visual"], f)
 
             # 打印进度
             log_print(f"[{sample_id}] Saved to {meta_path}")

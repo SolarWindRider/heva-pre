@@ -157,8 +157,16 @@ def _sample_with_vattn_and_entropy(
 
         gen_entropy = get_entropy(next_token_logits)
         gen_vattn = get_vattn(outputs.attentions, visual_token_indices=self.visual_token_indices)
+        attn_acc_input, attn_acc_visual = get_attn_acc(
+            outputs.attentions,
+            visual_token_indices=self.visual_token_indices,
+            inputs_token_indices=self.inputs_token_indices,
+            topk=cur_len,
+        )
         self.gen_entropy.append(gen_entropy)
         self.gen_vattn.append(gen_vattn)
+        self.attn_acc_input.append(attn_acc_input)
+        self.attn_acc_visual.append(attn_acc_visual)
         # Store scores, attentions and hidden_states when required
         if return_dict_in_generate:
             if output_scores:
@@ -233,11 +241,77 @@ def get_entropy(logits):
 
 
 def get_vattn(attentions, visual_token_indices):
-    attn = attentions[-1][
-        :, :, -1, :
-    ]  # 选择最后一层的attention,得到(batch_size, num_heads, 当前seq_len)，注意这里的当前seq_len是随着生成过程增加的
-    attn = torch.mean(attn, dim=1)  # 对num_heads求平均,得到 (batch_size,  当前seq_len)
-    attn = torch.mean(
-        attn[:, visual_token_indices[0] : visual_token_indices[1] + 1], dim=1
-    )  # 求当前token对视觉token的attention的均值,得到（batchsize, 1）
-    return attn
+    """
+    计算当前生成token对视觉token的平均注意力。
+
+    Args:
+        attentions: attention 列表
+        visual_token_indices: (start_indices, end_indices), each shape (batch_size,)
+
+    Returns:
+        每batch的视觉注意力均值: (batch_size,)
+    """
+    attn = attentions[-1][:, :, -1, :]  # (batch_size, num_heads, seq_len)
+    attn = torch.mean(attn, dim=1)  # (batch_size, seq_len)
+
+    # visual_token_indices 现在是 (batch_size,) tensors
+    visual_start = visual_token_indices[0]  # (batch_size,)
+    visual_end = visual_token_indices[1]    # (batch_size,)
+
+    # 对每个 batch 元素分别计算
+    batch_size = attn.shape[0]
+    results = []
+    for b in range(batch_size):
+        v_start = visual_start[b].item()
+        v_end = visual_end[b].item()
+        results.append(attn[b, v_start:v_end + 1].mean())
+
+    return torch.stack(results)  # (batch_size,)
+
+
+def get_attn_acc(attentions, visual_token_indices, inputs_token_indices, topk):
+    """
+    计算当前生成token对input tokens的attention中，top-k注意力里有多少比例指向视觉token和input token。
+
+    Args:
+        attentions: 模型输出的attention列表，最后一层为 attentions[-1]
+        visual_token_indices: (start_indices, end_indices), each shape (batch_size,)
+        inputs_token_indices: (start_indices, end_indices), each shape (batch_size,)
+        topk: 取attention值最高的top-k个token
+
+    Returns:
+        attn_acc_input: 每batch的input token占比: (batch_size,)
+        attn_acc_visual: 每batch的visual token占比: (batch_size,)
+    """
+    attn = attentions[-1][:, :, -1, :]  # (batch_size, num_heads, seq_len)
+    attn = torch.mean(attn, dim=1)  # (batch_size, seq_len)
+
+    _, topk_indices = torch.topk(attn, k=topk, dim=-1)  # (batch_size, topk)
+
+    visual_start, visual_end = visual_token_indices  # each (batch_size,)
+    input_start, input_end = inputs_token_indices    # each (batch_size,)
+
+    batch_size = attn.shape[0]
+    attn_acc_visual_list = []
+    attn_acc_input_list = []
+
+    for b in range(batch_size):
+        seq_len = attn.shape[-1]
+        v_s, v_e = visual_start[b].item(), visual_end[b].item()
+        i_s, i_e = input_start[b].item(), input_end[b].item()
+
+        # 构建当前batch的mask
+        visual_mask = torch.zeros(seq_len, device=attn.device)
+        visual_mask[v_s:v_e + 1] = 1.0
+
+        input_mask = torch.zeros(seq_len, device=attn.device)
+        input_mask[i_s:i_e + 1] = 1.0
+
+        # 统计top-k中视觉token和input token的比例
+        topk_is_visual = visual_mask[topk_indices[b]]  # (topk,)
+        topk_is_input = input_mask[topk_indices[b]]    # (topk,)
+
+        attn_acc_visual_list.append(topk_is_visual.sum().item() / topk)
+        attn_acc_input_list.append(topk_is_input.sum().item() / topk)
+
+    return torch.tensor(attn_acc_input_list), torch.tensor(attn_acc_visual_list)
