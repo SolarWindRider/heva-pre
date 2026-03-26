@@ -1,7 +1,7 @@
 *.pyc
 results
 plots
-__*
+__pycache__
 .ipynb*
 *.out
 kernel_meta
