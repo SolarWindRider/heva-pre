@@ -1360,32 +1360,212 @@ def compare_thinking_vs_instruct(thinking_exp_dir, instruct_exp_dir, top_percent
     }
 
 
+# 分析attn_acc (输入注意力与视觉注意力)
+def analyze_attn_acc(exp_dir):
+    """
+    分析attn_acc_input和attn_acc_visual的统计特性
+
+    attn_acc: 每个token对输入文本/视觉图像的注意力准确度
+
+    Args:
+        exp_dir: 实验路径，如 ./results/exp005
+    """
+    import pickle
+
+    exp_path = Path(exp_dir)
+
+    bench_results = {}
+
+    for bench_dir in sorted(exp_path.iterdir()):
+        if not bench_dir.is_dir():
+            continue
+
+        bench_name = bench_dir.name
+        input_accs = []
+        visual_accs = []
+        correct_input_accs = []
+        incorrect_input_accs = []
+        correct_visual_accs = []
+        incorrect_visual_accs = []
+
+        for json_file in bench_dir.glob("*_meta.json"):
+            try:
+                with open(json_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                input_path = data.get("attn_acc_input_path")
+                visual_path = data.get("attn_acc_visual_path")
+                correct = data.get("correct", False)
+
+                if not input_path or not visual_path:
+                    continue
+
+                input_path = Path(input_path)
+                visual_path = Path(visual_path)
+
+                if not input_path.exists() or not visual_path.exists():
+                    continue
+
+                # 加载数据
+                with open(input_path, "rb") as f:
+                    input_acc = pickle.load(f)
+                    input_acc = input_acc.squeeze().numpy().mean()
+
+                with open(visual_path, "rb") as f:
+                    visual_acc = pickle.load(f)
+                    visual_acc = visual_acc.float().squeeze().numpy().mean()
+
+                input_accs.append(input_acc)
+                visual_accs.append(visual_acc)
+
+                if correct:
+                    correct_input_accs.append(input_acc)
+                    correct_visual_accs.append(visual_acc)
+                else:
+                    incorrect_input_accs.append(input_acc)
+                    incorrect_visual_accs.append(visual_acc)
+
+            except Exception as e:
+                continue
+
+        if input_accs:
+            bench_results[bench_name] = {
+                "input_accs": np.array(input_accs),
+                "visual_accs": np.array(visual_accs),
+                "correct_input_accs": np.array(correct_input_accs),
+                "incorrect_input_accs": np.array(incorrect_input_accs),
+                "correct_visual_accs": np.array(correct_visual_accs),
+                "incorrect_visual_accs": np.array(incorrect_visual_accs),
+                "all_correct": np.array([1] * len(correct_input_accs) + [0] * len(incorrect_input_accs)),
+            }
+
+    print(f"\n{'='*60}")
+    print("Attn_ACC 统计分析 (按Benchmark)")
+    print(f"{'='*60}")
+
+    print(f"\n{'Benchmark':<20} {'Input_ACC':<15} {'Visual_ACC':<15} {'样本数':<10}")
+    print("-" * 60)
+    for bench_name in sorted(bench_results.keys()):
+        data = bench_results[bench_name]
+        n = len(data["input_accs"])
+        input_mean = data["input_accs"].mean()
+        visual_mean = data["visual_accs"].mean()
+        print(f"{bench_name:<20} {input_mean:<15.4f} {visual_mean:<15.4f} {n:<10}")
+
+    # 整体统计
+    all_input = np.concatenate([d["input_accs"] for d in bench_results.values()])
+    all_visual = np.concatenate([d["visual_accs"] for d in bench_results.values()])
+    all_correct = np.concatenate([d["all_correct"] for d in bench_results.values()])
+
+    print("-" * 60)
+    print(f"{'Overall':<20} {all_input.mean():<15.4f} {all_visual.mean():<15.4f} {len(all_input):<10}")
+
+    # 按正确性分组统计
+    print(f"\n{'='*60}")
+    print("按回答正确性分组")
+    print(f"{'='*60}")
+
+    print(f"\n{'Benchmark':<20} {'正确-Input':<15} {'错误-Input':<15} {'正确-Visual':<15} {'错误-Visual':<15}")
+    print("-" * 75)
+
+    for bench_name in sorted(bench_results.keys()):
+        data = bench_results[bench_name]
+        correct_in = data["correct_input_accs"].mean() if len(data["correct_input_accs"]) > 0 else 0
+        incorrect_in = data["incorrect_input_accs"].mean() if len(data["incorrect_input_accs"]) > 0 else 0
+        correct_vis = data["correct_visual_accs"].mean() if len(data["correct_visual_accs"]) > 0 else 0
+        incorrect_vis = data["incorrect_visual_accs"].mean() if len(data["incorrect_visual_accs"]) > 0 else 0
+
+        n_correct = len(data["correct_input_accs"])
+        n_incorrect = len(data["incorrect_input_accs"])
+
+        print(f"{bench_name:<20} {correct_in:<15.4f} {incorrect_in:<15.4f} {correct_vis:<15.4f} {incorrect_vis:<15.4f}")
+
+    # 整体正确/错误对比
+    all_correct_input = np.concatenate([d["correct_input_accs"] for d in bench_results.values()])
+    all_incorrect_input = np.concatenate([d["incorrect_input_accs"] for d in bench_results.values()])
+    all_correct_visual = np.concatenate([d["correct_visual_accs"] for d in bench_results.values()])
+    all_incorrect_visual = np.concatenate([d["incorrect_visual_accs"] for d in bench_results.values()])
+
+    print("-" * 75)
+    print(f"{'Overall':<20} {all_correct_input.mean():<15.4f} {all_incorrect_input.mean():<15.4f} {all_correct_visual.mean():<15.4f} {all_incorrect_visual.mean():<15.4f}")
+
+    # T检验
+    if len(all_correct_visual) > 0 and len(all_incorrect_visual) > 0:
+        t_stat, p_val = stats.ttest_ind(all_correct_visual, all_incorrect_visual)
+        print(f"\nVisual_ACC T检验: t={t_stat:.4f}, p={p_val:.4e}")
+
+    # 计算attn_acc与正确性的相关性
+    print(f"\n{'='*60}")
+    print("Attn_ACC 与正确性的相关性分析")
+    print(f"{'='*60}")
+
+    print(f"\n整体相关性 (皮尔逊):")
+    corr_input, p_input = stats.pearsonr(all_input, (all_correct > 0).astype(int))
+    corr_visual, p_visual = stats.pearsonr(all_visual, (all_correct > 0).astype(int))
+    print(f"  Input_ACC vs 正确性: r={corr_input:.4f}, p={p_input:.4e}")
+    print(f"  Visual_ACC vs 正确性: r={corr_visual:.4f}, p={p_visual:.4e}")
+
+    # 按benchmark分析相关性
+    print(f"\n各Benchmark Input_ACC与正确性相关性:")
+    print(f"{'Benchmark':<20} {'Corr':<12} {'P-value':<15}")
+    print("-" * 47)
+    for bench_name in sorted(bench_results.keys()):
+        data = bench_results[bench_name]
+        acc_values = data["input_accs"]
+        correct = data["all_correct"]
+
+        if len(acc_values) > 10:
+            corr, pval = stats.pearsonr(acc_values, correct)
+            print(f"{bench_name:<20} {corr:<12.4f} {pval:<15.4e}")
+
+    print(f"\n各Benchmark Visual_ACC与正确性相关性:")
+    print(f"{'Benchmark':<20} {'Corr':<12} {'P-value':<15}")
+    print("-" * 47)
+    for bench_name in sorted(bench_results.keys()):
+        data = bench_results[bench_name]
+        acc_values = data["visual_accs"]
+        correct = data["all_correct"]
+
+        if len(acc_values) > 10:
+            corr, pval = stats.pearsonr(acc_values, correct)
+            print(f"{bench_name:<20} {corr:<12.4f} {pval:<15.4e}")
+
+    # 按attn_acc高低分组统计正确率
+    print(f"\n按Visual_ACC高低分组统计正确率:")
+    median_visual = np.median(all_visual)
+    low_mask = all_visual < median_visual
+    high_mask = all_visual >= median_visual
+
+    low_acc = (all_correct > 0)[low_mask].mean()
+    high_acc = (all_correct > 0)[high_mask].mean()
+
+    print(f"  低Visual_ACC组 (<{median_visual:.4f}): 正确率={low_acc:.4f}, 样本数={low_mask.sum()}")
+    print(f"  高Visual_ACC组 (>={median_visual:.4f}): 正确率={high_acc:.4f}, 样本数={high_mask.sum()}")
+
+    # 按四分位数分组
+    q25 = np.percentile(all_visual, 25)
+    q50 = np.percentile(all_visual, 50)
+    q75 = np.percentile(all_visual, 75)
+
+    bins = [0, q25, q50, q75, float('inf')]
+    labels = ['Q1(最低)', 'Q2', 'Q3', 'Q4(最高)']
+
+    print(f"\n按Visual_ACC四分位数分组:")
+    print(f"  分位点: Q25={q25:.4f}, Q50={q50:.4f}, Q75={q75:.4f}")
+    print(f"\n  {'分组':<12} {'正确率':<10} {'样本数':<10}")
+    print(f"  {'-'*32}")
+    for i in range(len(bins) - 1):
+        mask = (all_visual >= bins[i]) & (all_visual < bins[i + 1])
+        if mask.sum() > 0:
+            acc = (all_correct > 0)[mask].mean()
+            count = mask.sum()
+            print(f"  {labels[i]:<12} {acc:<10.4f} {count:<10}")
+
+    return bench_results
+
+
 if __name__ == "__main__":
-    exp_dir = "./results/exp001"
+    exp_dir = "./results/exp005"
 
-    # 统计ACC
-    calculate_acc(exp_dir)
-
-    # 分析回答长度与正确性相关性
-    analyze_response_length_correlation(exp_dir)
-
-    # 分析token熵与视觉注意力相关性
-    analyze_entropy_vattn_correlation(exp_dir)
-
-    # 分析高熵token是否有更高的视觉注意力
-    analyze_high_entropy_vattn(exp_dir)
-
-    # 分析HEVA与回答正确性的关系
-    analyze_vattn_correctness(exp_dir)
-
-    # 验证假设：高熵token的HEVA更高 -> 更容易回答正确
-    verify_heva_hypothesis(exp_dir)
-
-    # 分析高熵token的特征（理解Instruct模型）
-    analyze_entropy_token_patterns(exp_dir)
-
-    # # 分析高熵token对应的文本内容
-    # analyze_high_entropy_text(exp_dir, top_percent=0.2, num_samples=5)
-
-    # # 对比Thinking vs Instruct模型
-    # compare_thinking_vs_instruct("./results/exp001", "./results/exp002")
+    # 分析attn_acc (输入注意力与视觉注意力)
+    analyze_attn_acc(exp_dir)

@@ -10,4 +10,13 @@
 # ASCEND_RT_VISIBLE_DEVICES=6 nohup python 1_run_inference.py --exp_name exp006 --model_path ../Downloads/Models/Qwen/Qwen3-VL-4B-Instruct --dataset VisuRiddles     > exp006_VisuRiddles.out 2>&1 &
 # ASCEND_RT_VISIBLE_DEVICES=7 nohup python 1_run_inference.py --exp_name exp006 --model_path ../Downloads/Models/Qwen/Qwen3-VL-4B-Instruct --dataset RAVEN > exp006_RAVEN.out 2>&1 &
 
+ASCEND_RT_VISIBLE_DEVICES=6 nohup python 1_run_inference.py --exp_name exp006 --model_path ../Downloads/Models/Qwen/Qwen3-VL-4B-Instruct --dataset MARVEL     > exp006_MARVEL.out 2>&1 &
+ASCEND_RT_VISIBLE_DEVICES=7 nohup python 1_run_inference.py --exp_name exp006 --model_path ../Downloads/Models/Qwen/Qwen3-VL-4B-Instruct --dataset LogicVista > exp006_LogicVista.out 2>&1 &
 
+
+ASCEND_RT_VISIBLE_DEVICES=0 nohup python 1_run_inference.py --exp_name exp007 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset VisuRiddles     > exp007_VisuRiddles.out 2>&1 &
+ASCEND_RT_VISIBLE_DEVICES=1 nohup python 1_run_inference.py --exp_name exp007 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset RAVEN > exp007_RAVEN.out 2>&1 &
+ASCEND_RT_VISIBLE_DEVICES=2 nohup python 1_run_inference.py --exp_name exp007 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset MARVEL > exp007_MARVEL.out 2>&1 &
+ASCEND_RT_VISIBLE_DEVICES=3 nohup python 1_run_inference.py --exp_name exp007 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset LogicVista > exp007_LogicVista.out 2>&1 &
+ASCEND_RT_VISIBLE_DEVICES=4 nohup python 1_run_inference.py --exp_name exp007 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset PuzzleVQA > exp007_PuzzleVQA.out 2>&1 &
+ASCEND_RT_VISIBLE_DEVICES=5 nohup python 1_run_inference.py --exp_name exp007 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset AlgoPuzzleVQA > exp007_AlgoPuzzleVQA.out 2>&1 &

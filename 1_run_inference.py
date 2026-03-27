@@ -95,8 +95,15 @@ def run_inference(
 
             gen_vattn_path = os.path.join(output_dir, f"pkls/{idx}_gen_vattn.pkl")
             gen_entropy_path = os.path.join(output_dir, f"pkls/{idx}_gen_entropy.pkl")
-            attn_acc_input_path = os.path.join(output_dir, f"pkls/{idx}_attn_acc_input.pkl")
-            attn_acc_visual_path = os.path.join(output_dir, f"pkls/{idx}_attn_acc_visual.pkl")
+            # Lookahead mode doesn't compute attn_acc_input/visual
+            has_attn_acc = "attn_acc_input" in result and "attn_acc_visual" in result
+            if has_attn_acc:
+                attn_acc_input_path = os.path.join(output_dir, f"pkls/{idx}_attn_acc_input.pkl")
+                attn_acc_visual_path = os.path.join(output_dir, f"pkls/{idx}_attn_acc_visual.pkl")
+            else:
+                attn_acc_input_path = None
+                attn_acc_visual_path = None
+
             # 准备元数据 (人类可读)
             meta = {
                 "idx": idx,
@@ -135,11 +142,12 @@ def run_inference(
             with open(gen_vattn_path, "wb") as f:
                 pickle.dump(result["gen_vattn"], f)
 
-            with open(attn_acc_input_path, "wb") as f:
-                pickle.dump(result["attn_acc_input"], f)
+            if has_attn_acc:
+                with open(attn_acc_input_path, "wb") as f:
+                    pickle.dump(result["attn_acc_input"], f)
 
-            with open(attn_acc_visual_path, "wb") as f:
-                pickle.dump(result["attn_acc_visual"], f)
+                with open(attn_acc_visual_path, "wb") as f:
+                    pickle.dump(result["attn_acc_visual"], f)
 
             # 打印进度
             log_print(f"[{sample_id}] Saved to {meta_path}")
