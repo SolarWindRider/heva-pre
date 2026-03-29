@@ -86,7 +86,7 @@ def run_inference(
             if use_context_aware:
                 # 构建 prompt 以获取 input_ids
                 option_str = f"option: {sample['options']}\n" if sample.get("options") else ""
-                full_question = sample["question"] + option_str + 'Write the answer into a JSON form\n```json\n{"answer": "X"}```'
+                full_question = sample["question"] + option_str + 'Think carefully and Write the answer into a JSON form\n```json\n{"answer": "X"}```'
 
                 messages = [
                     {"role": "system", "content": [{"type": "text", "text": "You are good at step by step reasoning."}]},
