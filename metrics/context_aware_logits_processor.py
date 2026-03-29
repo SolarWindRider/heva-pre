@@ -188,23 +188,23 @@ class ContextAwareLogitsProcessor(LogitsProcessor):
         self._context_token_indices = indices
 
     def _get_context_heads(self) -> list:
-        """Get context heads from the cached attentions."""
-        if self._last_attentions is None:
+        """Get context heads from the cached attentions (stored on the model by monkey-patch)."""
+        if not hasattr(self.model, '_last_attentions') or self.model._last_attentions is None:
             return []
         return select_context_heads(
-            self._last_attentions,
+            self.model._last_attentions,
             self._context_token_indices,
             self.top_heads
         )
 
     def _compute_support(self, token_ids: torch.Tensor) -> torch.Tensor:
         """Compute context support scores for candidate tokens."""
-        if self._last_attentions is None:
+        if not hasattr(self.model, '_last_attentions') or self.model._last_attentions is None:
             return torch.zeros(len(token_ids), device=token_ids.device)
 
         return compute_token_support_from_attentions(
             self.model,
-            self._last_attentions,
+            self.model._last_attentions,
             None,
             token_ids,
             self._get_context_heads(),
@@ -215,17 +215,18 @@ class ContextAwareLogitsProcessor(LogitsProcessor):
         """
         Select token based on context-head support when uncertain.
 
-        Flow:
-        1. Apply temperature to get softmax distribution (simulating model's sampling)
-        2. Use top-k + top-p to narrow candidates
-        3. Among those candidates, use context-head support to make final selection
+        Flow (matching standard HuggingFace warper order):
+        1. Apply temperature: scores = scores / temperature
+        2. Apply top-k filtering (keep top-k, mask others to -inf)
+        3. Apply top-p filtering on top-k result (mask tokens exceeding cumsum threshold)
+        4. Get final candidate pool → compute context support → make selection
 
         Args:
             input_ids: (batch, seq_len) - current input sequence
-            scores: (batch, vocab) - raw logits from model
+            scores: (batch, vocab) - raw logits from model (temperature NOT yet applied)
 
         Returns:
-            modified scores where only the context-selected token has a clear advantage
+            modified scores where only the context-selected token has high value
         """
         # 1. Compute entropy
         entropy = compute_entropy(scores)  # (batch,)
@@ -241,38 +242,47 @@ class ContextAwareLogitsProcessor(LogitsProcessor):
             self._selected_token = None
             return scores
 
-        # 3. Simulate temperature + top-k/top-p sampling to get candidate pool
-        temperature = 1.0  # don't re-sample, just use logits as-is
-        logits_for_sampling = scores[0] / temperature
-        probs = torch.softmax(logits_for_sampling, dim=-1)  # (vocab,)
+        # 3. Apply temperature (same as TemperatureLogitsWarper)
+        temperature = 1.0
+        temp_scores = scores[0] / temperature  # (vocab,)
 
-        # Top-k filtering
+        # 4. Top-k filtering (same as TopKLogitsWarper): keep top-k, mask rest to -inf
         k = min(self.top_k, scores.shape[-1])
-        topk_probs, topk_ids = torch.topk(probs, k=k)
+        topk_scores, topk_ids = torch.topk(temp_scores, k=k)  # (k,)
 
-        # Top-p filtering (cumulative probability threshold)
-        cumsum = torch.cumsum(topk_probs, dim=-1)
+        # Masked scores: -inf for non-top-k tokens
+        masked_scores = torch.full_like(temp_scores, -float('inf'))
+        masked_scores[topk_ids] = topk_scores
+
+        # 5. Top-p filtering (same as TopPLogitsWarper): on the top-k filtered set
+        # First apply softmax to get probabilities, then cumulative sum
+        probs = torch.softmax(masked_scores, dim=-1)  # only top-k have non--inf scores
+        sorted_probs, sorted_indices = torch.sort(probs, descending=True)
+        cumsum = torch.cumsum(sorted_probs, dim=-1)
+
+        # Tokens that push cumsum above threshold are masked
         p_threshold = 0.9
         mask = cumsum <= p_threshold
-        # Always keep at least the top one
-        mask[..., -1] = True
-        candidate_mask = mask
+        # Always keep at least the top-1
+        mask[-1] = True
+
+        # Map sorted mask back to original token indices
+        cand_mask = torch.zeros_like(probs, dtype=torch.bool)
+        cand_mask[sorted_indices[mask]] = True
 
         # Candidate token ids after top-k + top-p
-        candidate_ids = topk_ids[candidate_mask]  # (num_candidates,)
-        candidate_probs = topk_probs[candidate_mask]  # (num_candidates,)
+        candidate_ids = topk_ids[cand_mask[topk_ids]]  # (num_candidates,)
+        candidate_probs = probs[candidate_ids]  # (num_candidates,)
 
         if candidate_ids.numel() == 0:
             # Fallback: use top-1
             candidate_ids = topk_ids[:1]
-            candidate_probs = topk_probs[:1]
+            candidate_probs = probs[candidate_ids]
 
-        # 4. Compute context support for candidate tokens
+        # 6. Compute context support for candidate tokens
         supports = self._compute_support(candidate_ids)  # (num_candidates,)
 
-        # 5. Combine candidate_probs with context support
-        # Strategy: weighted combination, context_weight determines how much context matters
-        # If context clearly favors one candidate, trust it; otherwise trust the model
+        # 7. Blend model probability with context support
         context_weight = 0.5
 
         # Normalize context support to [0, 1]
@@ -290,15 +300,13 @@ class ContextAwareLogitsProcessor(LogitsProcessor):
         # Combined score for each candidate
         combined = (1 - context_weight) * norm_candidate_probs + context_weight * norm_supports
 
-        # Select the candidate with highest combined score
+        # 8. Select the candidate with highest combined score
         best_combined_idx = torch.argmax(combined).item()
         selected_token_id = candidate_ids[best_combined_idx].item()
         self._selected_token = selected_token_id
 
-        # 6. Return modified scores: only the selected token gets a boost
-        # This makes it nearly certain to be chosen in subsequent sampling
+        # 9. Return modified scores: only the selected token gets a boost
         new_scores = scores.clone()
-        # Zero out all scores, then give the selected token an enormous advantage
         new_scores[0].fill_(-float('inf'))
         new_scores[0, selected_token_id] = float('inf')
 

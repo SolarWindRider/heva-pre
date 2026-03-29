@@ -74,7 +74,9 @@ def run_inference(
             entropy_threshold=ctx_entropy_threshold,
             top_heads=ctx_top_heads,
         )
-        log_print(f"Context-Aware Decoding enabled: top_k={ctx_top_k}, entropy_threshold={ctx_entropy_threshold}, top_heads={ctx_top_heads}")
+        log_print(
+            f"Context-Aware Decoding enabled: top_k={ctx_top_k}, entropy_threshold={ctx_entropy_threshold}, top_heads={ctx_top_heads}"
+        )
 
     results = []
     errors = []
@@ -87,7 +89,7 @@ def run_inference(
             logits_processor = None
             if use_context_aware:
                 # 构建 prompt 以获取 input_ids
-                option_str = f"option: {sample['options']}\n" if sample.get('options') else ""
+                option_str = f"option: {sample['options']}\n" if sample.get("options") else ""
                 full_question = sample["question"] + option_str + 'Write the answer into a JSON form\n```json\n{"answer": "X"}```'
 
                 messages = [
@@ -260,7 +262,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     # 模型超参数
-    parser.add_argument("--max_new_tokens", type=int, default=17, help="Max new tokens for generation")
+    parser.add_argument("--max_new_tokens", type=int, default=4095, help="Max new tokens for generation")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for generation")
     parser.add_argument("--top_p", type=float, default=1.0, help="Top-p sampling")
     parser.add_argument("--top_k", type=int, default=40, help="Top-k sampling")  # 温度、topk、topp和Qwen3VL原文保持一致
@@ -275,9 +277,9 @@ def main():
     parser.add_argument("--model_path", type=str, default="../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking", help="Model path")
 
     # Context-Aware Decoding 配置
-    parser.add_argument("--use_context_aware", action="store_true", default=False, help="Enable Context-Aware Decoding")
+    parser.add_argument("--use_context_aware", action="store_true", default=True, help="Enable Context-Aware Decoding")
     parser.add_argument("--ctx_top_k", type=int, default=20, help="Context-Aware: top-k candidate tokens")
-    parser.add_argument("--ctx_entropy_threshold", type=float, default=5.0, help="Context-Aware: entropy threshold to trigger adjustment")
+    parser.add_argument("--ctx_entropy_threshold", type=float, default=1.0, help="Context-Aware: entropy threshold to trigger adjustment")
     parser.add_argument("--ctx_top_heads", type=int, default=5, help="Context-Aware: number of context heads to use")
     parser.add_argument("--ctx_start_idx", type=int, default=None, help="Context-Aware: user-specified context start index (optional)")
     parser.add_argument("--ctx_end_idx", type=int, default=None, help="Context-Aware: user-specified context end index (optional)")
@@ -354,7 +356,9 @@ def main():
     )
 
     if args.use_context_aware:
-        log_print(f"Context-Aware Decoding: top_k={args.ctx_top_k}, entropy_threshold={args.ctx_entropy_threshold}, top_heads={args.ctx_top_heads}")
+        log_print(
+            f"Context-Aware Decoding: top_k={args.ctx_top_k}, entropy_threshold={args.ctx_entropy_threshold}, top_heads={args.ctx_top_heads}"
+        )
 
     # 运行推理
     run_inference(

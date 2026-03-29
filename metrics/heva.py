@@ -152,6 +152,9 @@ def _sample_with_vattn_and_entropy(
         # (the clone itself is always small)
         next_token_logits = outputs.logits[:, -1, :].to(copy=True, dtype=torch.float32, device=input_ids.device)
 
+        # Cache attentions for ContextAwareLogitsProcessor (reads model._last_attentions)
+        self._last_attentions = outputs.attentions
+
         # pre-process distribution
         next_token_scores = logits_processor(input_ids, next_token_logits)
 
