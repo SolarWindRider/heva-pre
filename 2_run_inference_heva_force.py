@@ -72,9 +72,7 @@ def run_inference(
             entropy_threshold=ctx_entropy_threshold,
             top_heads=ctx_top_heads,
         )
-        log_print(
-            f"Context-Aware Decoding enabled: entropy_threshold={ctx_entropy_threshold}, top_heads={ctx_top_heads}"
-        )
+        log_print(f"Context-Aware Decoding enabled: entropy_threshold={ctx_entropy_threshold}, top_heads={ctx_top_heads}")
 
     results = []
     errors = []
@@ -265,13 +263,10 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     # 模型超参数
-    parser.add_argument("--max_new_tokens", type=int, default=4095, help="Max new tokens for generation")
+    parser.add_argument("--max_new_tokens", type=int, default=8192, help="Max new tokens for generation")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for generation")
     parser.add_argument("--top_p", type=float, default=1.0, help="Top-p sampling")
     parser.add_argument("--top_k", type=int, default=40, help="Top-k sampling")  # 温度、topk、topp和Qwen3VL原文保持一致
-
-    # 图像处理 (使用模型默认)
-    parser.add_argument("--do_sample", action="store_true", default=True, help="Enable sampling")
 
     # 输出配置
     parser.add_argument("--output_dir", type=str, default="results", help="Output directory")
@@ -292,7 +287,7 @@ def main():
     set_seed(args.seed)
 
     args.output_dir = os.path.join(args.output_dir, args.exp_name, args.dataset)
-
+    args.do_sample = True
     # 创建实验目录
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -357,9 +352,7 @@ def main():
     )
 
     if args.use_context_aware:
-        log_print(
-            f"Context-Aware Decoding: top_k={args.ctx_top_k}, entropy_threshold={args.ctx_entropy_threshold}, top_heads={args.ctx_top_heads}"
-        )
+        log_print(f"Context-Aware Decoding: entropy_threshold={args.ctx_entropy_threshold}, top_heads={args.ctx_top_heads}")
 
     # 运行推理
     run_inference(

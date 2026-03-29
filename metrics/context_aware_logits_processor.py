@@ -212,7 +212,6 @@ class ContextAwareLogitsProcessor(LogitsProcessor):
         return compute_token_support_from_attentions(
             self.model,
             self.model._last_attentions,
-            None,
             token_ids,
             self._get_context_heads(),
             self._context_token_indices,
@@ -256,12 +255,12 @@ class ContextAwareLogitsProcessor(LogitsProcessor):
         ctx_best_idx = torch.argmax(supports).item()
         ctx_selected_id = topk_ids[ctx_best_idx].item()
 
-        # Set all tokens except ctx_selected_id to -inf in-place
+        # Set all tokens except ctx_selected_id to -inf (return new tensor, don't modify in-place)
         ctx_logit = scores[0, ctx_selected_id].item()
-        scores[0].fill_(-float("inf"))
-        scores[0, ctx_selected_id] = ctx_logit
+        new_scores = torch.full_like(scores, -float("inf"))
+        new_scores[0, ctx_selected_id] = ctx_logit
 
-        return scores
+        return new_scores
 
 
 class ContextAwareModelWrapper:
