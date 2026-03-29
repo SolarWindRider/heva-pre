@@ -18,17 +18,28 @@ where:
 
 Pipeline flow:
 ```
-data/loader.py         → Load datasets (VisuRiddles, RAVEN, MARVEL, LogicVista, PuzzleVQA, AlgoPuzzleVQA)
-data/perturbations.py → Image perturbations (shuffle_patches, gaussian_blur, zero_image, etc.)
+data/loader.py           → Load datasets (VisuRiddles, RAVEN, MARVEL, LogicVista, PuzzleVQA, AlgoPuzzleVQA)
+data/perturbations.py    → Image perturbations (shuffle_patches, gaussian_blur, zero_image, etc.)
     ↓
-metrics/inference.py  → Qwen3-VL inference with attention capture
+metrics/inference.py    → Qwen3-VL inference with attention capture
+metrics/heva.py          → Monkey-patches Qwen3VLForConditionalGeneration._sample to capture entropy and visual attention
+metrics/context_aware_logits_processor.py → Context-Aware Decoding LogitsProcessor (optional)
     ↓
-metrics/heva.py       → Monkey-patches Qwen3VLForConditionalGeneration._sample to capture entropy and visual attention
-    ↓
-analysis/             → Statistics and visualization
+analysis/               → Statistics and visualization
 ```
 
 **Key architectural decision**: The model is monkey-patched at `Qwen3VLForConditionalGeneration._sample` via `_sample_with_vattn_and_entropy` in `metrics/heva.py` to capture per-token entropy and visual attention during generation. This avoids storing full attention tensors.
+
+## Scripts (numbered, run from project root)
+
+| Script | Purpose |
+|--------|---------|
+| `1_run_inference.py` | Run inference with attention capture (supports Context-Aware Decoding via `--use_context_aware`) |
+| `2_run_inference_heva_force.py` | Same inference pipeline but without Context-Aware Decoding support |
+| `7_statistics.py` | Statistical analysis of inference results (accuracy, HEVA-correctness correlation, etc.) |
+| `devp.py` / `devp2.py` / `devp3.py` | Ad-hoc development/debug scripts |
+
+Results go to `results/{exp_name}/{dataset}/` with `pkls/` subdirectory for pickle files and `{sample_id}_meta.json` for per-sample metadata.
 
 ## Environment
 
@@ -36,16 +47,21 @@ analysis/             → Statistics and visualization
 conda activate PyTorch-2.1.0
 ```
 
+**GPU selection** (Huawei NPU/Ascend): Set `ASCEND_RT_VISIBLE_DEVICES=0` before the command.
+
 ## Common Commands
 
 ```bash
-# Run inference with attention capture (outputs to results/{exp_name}/{dataset}/)
+# Run inference with attention capture
 python 1_run_inference.py --exp_name exp001 --dataset VisuRiddles --num_samples 50
 
-# Compute HEVA from inference results
-python 2_run_inference_heva.py
+# Run inference with Context-Aware Decoding
+python 1_run_inference.py --exp_name exp001 --dataset VisuRiddles --use_context_aware --ctx_entropy_threshold 5.0 --ctx_top_k 20 --ctx_top_heads 5
 
-# Run statistical analysis
+# Run inference (without CAD) — outputs to results/{exp_name}/{dataset}/
+python 2_run_inference_heva_force.py --exp_name exp001 --dataset MARVEL --num_samples 100
+
+# Statistical analysis
 python 7_statistics.py
 ```
 
@@ -55,7 +71,7 @@ python 7_statistics.py
 
 ## Paths
 
-- Model: `/home/ma-user/work/Downloads/Models/Qwen/Qwen3-VL-2B-Instruct`
+- Model: `/home/ma-user/work/Downloads/Models/Qwen/Qwen3-VL-2B-Instruct` (default)
 - Data root: `/home/ma-user/work/datas`
 - Results: `./results/`
 
@@ -70,16 +86,22 @@ python 7_statistics.py
 - Visual token ID: `151643` (`<|image_pad|>`) in Qwen3-VL
 - `get_visual_token_indices()` in `metrics/inference.py` finds continuous image token range
 
+### Monkey-Patching Mechanism
+- Line 12 in `metrics/inference.py`: `Qwen3VLForConditionalGeneration._sample = _sample_with_vattn_and_entropy`
+- This replaces the generation method to capture attention and entropy at each step
+- Results stored in model instance attributes: `model.gen_entropy`, `model.gen_vattn`, `model.attn_acc_input`, `model.attn_acc_visual`
+
+### Context-Aware Decoding (`metrics/context_aware_logits_processor.py`)
+- `ContextAwareLogitsProcessor` is a `LogitsProcessor` that boosts context-supported tokens when entropy > threshold
+- Context = visual tokens by default (detected via `get_visual_token_indices`)
+- Enabled via `--use_context_aware` flag in `1_run_inference.py`
+- Key classes: `ContextAwareLogitsProcessor`, `select_context_heads()`, `compute_token_support_from_attentions()`
+
 ### Memory Optimization (in generate_with_attn)
 - Uses `use_cache=True` (KV cache) for reduced memory
 - Only captures `gen_entropy` and `gen_vattn` per token (not full attention tensors)
 - `gen_entropy`: (gen_tokens_num, batch_size)
 - `gen_vattn`: (gen_tokens_num, batch_size, visual_token_num)
-
-### Monkey-Patching Mechanism
-- Line 12 in `metrics/inference.py`: `Qwen3VLForConditionalGeneration._sample = _sample_with_vattn_and_entropy`
-- This replaces the generation method to capture attention and entropy at each step
-- Results stored in model instance attributes: `model.gen_entropy`, `model.gen_vattn`, `model.attn_acc_input`, `model.attn_acc_visual`
 
 ### Expected HEVA Ranges
 - Language shortcut samples: 0.01 ~ 0.05

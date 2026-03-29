@@ -5,7 +5,7 @@ HEVA 模型推理模块
 """
 
 import torch
-from typing import Dict, Any
+from typing import Dict, Any, Optional, List
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 from metrics.heva import _sample_with_vattn_and_entropy
 
@@ -131,6 +131,7 @@ def generate_with_attn(
     top_p: float = 0.9,
     top_k: int = 50,
     do_sample: bool = True,
+    logits_processor: Optional[List] = None,
 ) -> Dict[str, Any]:
     """
     带 attention 的生成 - 使用 KV Cache 优化版本
@@ -148,6 +149,7 @@ def generate_with_attn(
         top_p: top-p 采样
         top_k: top-k 采样
         do_sample: 是否采样
+        logits_processor: 可选的 LogitsProcessor 列表，用于自定义解码策略
 
     Returns:
         {
@@ -215,6 +217,7 @@ def generate_with_attn(
             return_dict_in_generate=True,  # 必须为True才可以计算entropy和vattn
             output_logits=True,  # 必须为True才可以计算entropy和vattn
             output_attentions=True,  # 必须为True才可以计算entropy和vattn
+            logits_processor=logits_processor,
             **generation_config,
         )
     gen_token_num = outputs.sequences.shape[1] - prompt_token_num

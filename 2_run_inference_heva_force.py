@@ -1,6 +1,8 @@
 """
 跑推理，用来验证heva这个指标是不是与回答是否正确有很强的相关性。
 验证结果：是的！heva越高，回答越有可能正确；heva越低，回答越有可能错误！
+
+支持 Context-Aware Decoding：通过 ContextAwareLogitsProcessor 在高熵时引入上下文信号。
 """
 
 import argparse
@@ -9,7 +11,9 @@ import os
 import torch
 from tqdm import tqdm
 from metrics.inference import load_model_processor, generate_with_attn
+
 from data.loader import load_dataset
+from metrics.context_aware_logits_processor import ContextAwareLogitsProcessor, get_context_token_indices
 import sys
 import pickle
 
@@ -32,6 +36,12 @@ def run_inference(
     top_p=0.9,
     top_k=50,
     do_sample=True,
+    # Context-Aware Decoding 参数
+    use_context_aware=False,
+    ctx_top_k=20,
+    ctx_entropy_threshold=5.0,
+    ctx_top_heads=5,
+    ctx_user_indices=None,
 ):
     """
     运行推理并缓存结果 (增量计算HEVA，无OOM问题)
@@ -46,9 +56,26 @@ def run_inference(
         top_p: top-p 采样
         top_k: top-k 采样
         do_sample: 是否采样
+        use_context_aware: 是否使用 Context-Aware Decoding
+        ctx_top_k: Context-Aware 的 top-k 参数
+        ctx_entropy_threshold: Context-Aware 的熵阈值
+        ctx_top_heads: Context-Aware 的 top_heads 参数
+        ctx_user_indices: 用户指定的 context token 范围 (start, end)，None 表示自动检测
     """
     os.makedirs(f"{output_dir}/pkls", exist_ok=True)
     model, processor = load_model_processor(model_path)
+
+    # 如果使用 Context-Aware Decoding，创建 processor
+    ctx_logits_processor = None
+    if use_context_aware:
+        ctx_logits_processor = ContextAwareLogitsProcessor(
+            model=model,
+            top_k=ctx_top_k,
+            entropy_threshold=ctx_entropy_threshold,
+            top_heads=ctx_top_heads,
+        )
+        log_print(f"Context-Aware Decoding enabled: top_k={ctx_top_k}, entropy_threshold={ctx_entropy_threshold}, top_heads={ctx_top_heads}")
+
     results = []
     errors = []
 
@@ -56,17 +83,54 @@ def run_inference(
         try:
             sample = dataset[idx]
 
+            # 如果使用 Context-Aware，需要先获取 context_token_indices
+            logits_processor = None
+            if use_context_aware:
+                # 构建 prompt 以获取 input_ids
+                option_str = f"option: {sample['options']}\n" if sample.get('options') else ""
+                full_question = sample["question"] + option_str + 'Write the answer into a JSON form\n```json\n{"answer": "X"}```'
+
+                messages = [
+                    {"role": "system", "content": [{"type": "text", "text": "You are good at step by step reasoning."}]},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image", "image": sample["image"]},
+                            {"type": "text", "text": full_question},
+                        ],
+                    },
+                ]
+
+                inputs = processor.apply_chat_template(
+                    messages,
+                    tokenize=True,
+                    add_generation_prompt=True,
+                    return_dict=True,
+                    return_tensors="pt",
+                )
+                inputs.pop("token_type_ids", None)
+
+                # 获取 context token indices
+                if ctx_user_indices is not None:
+                    context_token_indices = ctx_user_indices
+                else:
+                    context_token_indices = get_context_token_indices(inputs["input_ids"], processor=processor)
+
+                ctx_logits_processor.set_context_token_indices(context_token_indices)
+                logits_processor = [ctx_logits_processor]
+
             result = generate_with_attn(
                 model=model,
                 processor=processor,
                 image=sample["image"],
                 question=sample["question"],
-                options=sample["options"],
+                options=sample.get("options", ""),
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
                 top_p=top_p,
                 top_k=top_k,
                 do_sample=do_sample,
+                logits_processor=logits_processor,
             )
 
             # 检查结果是否有效
@@ -82,7 +146,7 @@ def run_inference(
             # 优先从JSON格式提取答案: {"answer": "X"}
             import re
 
-            json_match = re.search(r'\{"answer":\s*"([^"]+)"\}', generated_text)
+            json_match = re.search(r'\{\"answer\":\s*\"([^\"]+)\"\}', generated_text)
             if json_match:
                 answer_pred = json_match.group(1).upper()
             else:
@@ -109,6 +173,7 @@ def run_inference(
                 "gen_vattn_path": gen_vattn_path,
                 "prompt": result["prompt_text"],
                 "generated_text": generated_text,
+                "use_context_aware": use_context_aware,
             }
 
             # 保存元数据为json
@@ -185,7 +250,7 @@ def main():
     parser = argparse.ArgumentParser(description="Run inference on multimodal dataset")
 
     # 实验配置
-    parser.add_argument("--exp_name", type=str, default="ttt", help="Experiment name (default: exp001)")
+    parser.add_argument("--exp_name", type=str, default="ctx_test", help="Experiment name (default: ctx_test)")
     parser.add_argument("--dataset", type=str, default="RAVEN", choices=SUPPORTED_DATASETS, help="Dataset name")
 
     # 采样配置
@@ -209,6 +274,14 @@ def main():
     # 模型配置
     parser.add_argument("--model_path", type=str, default="../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking", help="Model path")
 
+    # Context-Aware Decoding 配置
+    parser.add_argument("--use_context_aware", action="store_true", default=False, help="Enable Context-Aware Decoding")
+    parser.add_argument("--ctx_top_k", type=int, default=20, help="Context-Aware: top-k candidate tokens")
+    parser.add_argument("--ctx_entropy_threshold", type=float, default=5.0, help="Context-Aware: entropy threshold to trigger adjustment")
+    parser.add_argument("--ctx_top_heads", type=int, default=5, help="Context-Aware: number of context heads to use")
+    parser.add_argument("--ctx_start_idx", type=int, default=None, help="Context-Aware: user-specified context start index (optional)")
+    parser.add_argument("--ctx_end_idx", type=int, default=None, help="Context-Aware: user-specified context end index (optional)")
+
     args = parser.parse_args()
 
     # 设置随机种子
@@ -218,6 +291,11 @@ def main():
 
     # 创建实验目录
     os.makedirs(args.output_dir, exist_ok=True)
+
+    # 用户指定的 context 范围
+    ctx_user_indices = None
+    if args.ctx_start_idx is not None and args.ctx_end_idx is not None:
+        ctx_user_indices = (torch.tensor([args.ctx_start_idx]), torch.tensor([args.ctx_end_idx]))
 
     # 保存实验配置到 config.json
     # 使用自定义模型路径或默认路径
@@ -237,6 +315,12 @@ def main():
         "top_p": args.top_p,
         "top_k": args.top_k,
         "do_sample": args.do_sample,
+        # Context-Aware 配置
+        "use_context_aware": args.use_context_aware,
+        "ctx_top_k": args.ctx_top_k,
+        "ctx_entropy_threshold": args.ctx_entropy_threshold,
+        "ctx_top_heads": args.ctx_top_heads,
+        "ctx_user_indices": ctx_user_indices,
     }
     config_path = os.path.join(args.output_dir, "exp_config.json")
     with open(config_path, "w", encoding="utf-8") as f:
@@ -269,6 +353,9 @@ def main():
         f"Hyperparameters: max_new_tokens={args.max_new_tokens}, temperature={args.temperature}, top_p={args.top_p}, top_k={args.top_k}"
     )
 
+    if args.use_context_aware:
+        log_print(f"Context-Aware Decoding: top_k={args.ctx_top_k}, entropy_threshold={args.ctx_entropy_threshold}, top_heads={args.ctx_top_heads}")
+
     # 运行推理
     run_inference(
         model_path,
@@ -280,6 +367,11 @@ def main():
         top_p=args.top_p,
         top_k=args.top_k,
         do_sample=args.do_sample,
+        use_context_aware=args.use_context_aware,
+        ctx_top_k=args.ctx_top_k,
+        ctx_entropy_threshold=args.ctx_entropy_threshold,
+        ctx_top_heads=args.ctx_top_heads,
+        ctx_user_indices=ctx_user_indices,
     )
 
 

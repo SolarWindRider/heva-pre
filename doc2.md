@@ -1,312 +1,423 @@
-很好，这一步你就从“调参”进入到**真正算法层创新了** 👍
-你说的就是我之前提的：
+很好，这一步我们直接把你的想法**工程化成一个标准、可复用、可插入 `generate()` 的插件**。我会给你一份**可以照着实现的开发文档（接近内部设计文档级别）**。
 
-> 🔥 **one-step lookahead decoding（前瞻一步）**
+目标是：
 
-而且你现在的目标很清晰：
-
-> 在 HuggingFace Transformers 的 decode loop 里实现它
-
-我直接给你一个**能跑的设计 + 实现框架（重点保证和 KV cache 兼容）**。
+> ✅ 在 HuggingFace Transformers 的 `generate()` 中
+> 插入一个 **LogitsProcessor**
+> 实现：
+> 🔥「高 entropy 时，用 *看图 head* 支持的 token 来重排 top-k」
 
 ---
 
-# 一、你要实现的算法（先讲清楚）
+# 🧩 一、整体架构设计
 
-当前 step (t)，你有：
+---
+
+## 🎯 插件职责
+
+你的插件做三件事：
 
 ```text
-prefix: x₁...x_{t-1}
-KV cache: KV_{t-1}
+logits → (判断 entropy) → (如果高 entropy)
+       → top-k → 计算 image-head support
+       → 调整 logits → 返回
 ```
 
 ---
 
-## 标准 decoding：
+## 📦 插件形式
 
-```text
-logits_t → sample → x_t
-```
-
----
-
-## 🔥 你的（lookahead）：
-
-```text
-logits_t → 选 top-k 候选 token
-
-for 每个 token_i:
-    prefix + token_i → forward 一步
-    → 得到 HEVA_{t+1}^{(i)}
-
-score_i = log_prob_i + λ · HEVA_{t+1}^{(i)}
-
-选最优 token
-```
-
----
-
-# 二、核心难点（你必须处理）
-
----
-
-## ❗问题1：不能破坏 KV cache
-
-👉 不能直接改当前 cache
-👉 必须“复制 + 临时扩展”
-
----
-
-## ❗问题2：不能 for-loop 20 次 forward（太慢）
-
-👉 必须：
-
-> 🔥 **batch 化 lookahead**
-
----
-
-# 三、完整实现思路（工程级）
-
----
-
-# Step 1️⃣：拿 top-k
+你要实现：
 
 ```python
-logits = outputs.logits[:, -1, :]   # (B, V)
-
-topk_vals, topk_ids = torch.topk(logits, k=K, dim=-1)
+class VisualGroundedLogitsProcessor(LogitsProcessor):
 ```
 
----
-
-# Step 2️⃣：构造 lookahead 输入（关键）
-
-假设：
-
-```text
-batch = B
-top-k = K
-```
-
----
-
-## 扩展 input_ids
+并插入：
 
 ```python
-expanded_input_ids = input_ids.unsqueeze(1).repeat(1, K, 1)
-expanded_input_ids = expanded_input_ids.view(B*K, -1)
-
-next_tokens = topk_ids.view(B*K, 1)
-
-lookahead_input_ids = torch.cat([expanded_input_ids, next_tokens], dim=-1)
-```
-
----
-
-## 扩展 KV cache（重点）
-
-```python
-def expand_past(past_key_values, K):
-    new_past = []
-    for layer in past_key_values:
-        k, v = layer
-        # (B, heads, seq, dim) → (B*K, heads, seq, dim)
-        k = k.unsqueeze(1).repeat(1, K, 1, 1, 1).view(B*K, *k.shape[1:])
-        v = v.unsqueeze(1).repeat(1, K, 1, 1, 1).view(B*K, *v.shape[1:])
-        new_past.append((k, v))
-    return new_past
-```
-
----
-
-# Step 3️⃣：做一次 batch forward
-
-```python
-lookahead_outputs = model(
-    input_ids=next_tokens,   # ⚠️ 只输入新 token！
-    past_key_values=expanded_past,
-    use_cache=True,
-    output_attentions=True
+model.generate(
+    ...,
+    logits_processor=[VisualGroundedLogitsProcessor(...)]
 )
 ```
 
 ---
 
-👉 注意：
+# 🔄 二、generate() 调用流程（你插入的位置）
+
+---
+
+在 `generate()` 内部：
 
 ```text
-只 forward 1 step（不会重复算 prefix）
+logits
+ ↓
+logits_processor   ← ✅ 你在这里
+ ↓
+logits_warper (top-k / top-p)
+ ↓
+softmax
+ ↓
+sampling
 ```
 
 ---
 
-# Step 4️⃣：计算 HEVA（每个候选）
+## ❗关键点
 
-```python
-attn = lookahead_outputs.attentions[-1]   # (B*K, heads, 1, seq)
-
-heva = compute_heva(attn)  # → (B*K,)
-heva = heva.view(B, K)
-```
-
----
-
-# Step 5️⃣：融合 score
-
-```python
-log_probs = torch.log_softmax(topk_vals, dim=-1)  # (B, K)
-
-scores = log_probs + lambda_ * heva
-```
-
----
-
-# Step 6️⃣：选 token
-
-```python
-best_idx = torch.argmax(scores, dim=-1)  # (B,)
-
-next_tokens = topk_ids[torch.arange(B), best_idx]
-```
-
----
-
-# Step 7️⃣：更新 KV cache（只保留选中的）
-
-```text
-⚠️ 不能用 lookahead 的 KV（因为那是 K 条分支）
-
-必须：
-→ 用选中的 token 再 forward 一次
-```
-
----
-
-```python
-final_outputs = model(
-    input_ids=next_tokens.unsqueeze(-1),
-    past_key_values=past_key_values,
-    use_cache=True
-)
-
-past_key_values = final_outputs.past_key_values
-```
-
----
-
-# 四、关键优化（非常重要）
-
----
-
-## 🔥 优化1：只取最后一层 attention
-
-```python
-output_attentions=True
-# 但只用 [-1]
-```
-
----
-
-## 🔥 优化2：K 不要太大
-
-建议：
-
-```text
-K = 5 ~ 10
-```
+👉 **你必须在 top-k 之前修改 logits**
 
 否则：
 
+* token 已被截断
+* 你无法重新排序
+
+---
+
+# 🏗 三、核心模块设计
+
+---
+
+# 1️⃣ HEVA / entropy 计算模块
+
+---
+
+## 输入
+
+```python
+scores: (batch, vocab)
+```
+
+---
+
+## 实现
+
+```python
+def compute_entropy(scores):
+    probs = torch.softmax(scores, dim=-1)
+    entropy = -(probs * torch.log(probs + 1e-9)).sum(dim=-1)
+    return entropy  # (batch,)
+```
+
+---
+
+# 2️⃣ Image-head 识别模块（提前完成）
+
+---
+
+## 🔥 推荐设计：在 forward hook 中缓存
+
+你不能在 processor 里重新算 attention（太慢）
+
+---
+
+## 做法：Monkey patch forward
+
+```python
+def attach_attention_hooks(model):
+
+    def forward_hook(module, input, output):
+        if hasattr(output, "attentions") and output.attentions is not None:
+            model._last_attentions = output.attentions
+
+    model._orig_forward = model.forward
+
+    def new_forward(*args, **kwargs):
+        kwargs["output_attentions"] = True
+        outputs = model._orig_forward(*args, **kwargs)
+
+        model._last_attentions = outputs.attentions
+        return outputs
+
+    model.forward = new_forward
+```
+
+---
+
+## 🔥 Image-head 选择函数
+
+```python
+def select_image_heads(model, image_token_positions, top_h=5):
+    """
+    根据 attention 强度选最关注 image token 的 heads
+    """
+
+    attn = model._last_attentions[-1]  # last layer
+    # shape: [batch, heads, query, key]
+
+    attn_to_image = attn[:, :, -1, image_token_positions].sum(dim=-1)
+    # (batch, heads)
+
+    top_heads = torch.topk(attn_to_image[0], k=top_h).indices
+
+    return [(model.cfg.n_layers - 1, int(h)) for h in top_heads]
+```
+
+---
+
+# 3️⃣ Token 支持度计算模块（核心）
+
+---
+
+## 输入
+
+```python
+topk_token_ids: (k,)
+image_heads: List[(layer, head)]
+```
+
+---
+
+## 实现
+
+```python
+def compute_support(model, cache, token_ids, image_heads):
+    dtype = model.W_U.dtype
+    d_model = model.cfg.d_model
+
+    supports = []
+
+    for token_id in token_ids:
+
+        # 取 unembed 向量
+        if model.W_U.shape[0] == d_model:
+            W_U_token = model.W_U[:, token_id]
+        else:
+            W_U_token = model.W_U[token_id, :]
+
+        total = 0.0
+
+        for (layer, head) in image_heads:
+            z = cache["z", layer][0, -1, head, :]
+            W_O = model.W_O[layer][head]
+
+            head_out = z @ W_O
+            total += (head_out @ W_U_token).item()
+
+        supports.append(total)
+
+    return torch.tensor(supports, device=token_ids.device)
+```
+
+---
+
+# 🚀 四、最终 LogitsProcessor 实现
+
+---
+
+## 完整代码
+
+```python
+from transformers import LogitsProcessor
+import torch
+
+class VisualGroundedLogitsProcessor(LogitsProcessor):
+    def __init__(
+        self,
+        model,
+        cache,
+        image_token_positions,
+        top_k=20,
+        entropy_threshold=5.0,
+        lambda_=0.5,
+        top_heads=5,
+    ):
+        self.model = model
+        self.cache = cache
+        self.image_token_positions = image_token_positions
+        self.top_k = top_k
+        self.entropy_threshold = entropy_threshold
+        self.lambda_ = lambda_
+        self.top_heads = top_heads
+
+    def __call__(self, input_ids, scores):
+        """
+        scores: (batch, vocab)
+        """
+
+        # 1️⃣ entropy
+        probs = torch.softmax(scores, dim=-1)
+        entropy = -(probs * torch.log(probs + 1e-9)).sum(dim=-1)
+
+        # 只处理 batch=1（先简化）
+        if entropy[0] < self.entropy_threshold:
+            return scores
+
+        # 2️⃣ 选 image heads
+        image_heads = select_image_heads(
+            self.model,
+            self.image_token_positions,
+            self.top_heads
+        )
+
+        # 3️⃣ top-k
+        topk_scores, topk_ids = torch.topk(scores[0], k=self.top_k)
+
+        # 4️⃣ support
+        supports = compute_support(
+            self.model,
+            self.cache,
+            topk_ids,
+            image_heads
+        )
+
+        # normalize
+        supports = (supports - supports.mean()) / (supports.std() + 1e-6)
+
+        # 5️⃣ 调整 logits
+        adjusted = topk_scores + self.lambda_ * supports
+
+        # 写回
+        new_scores = scores.clone()
+        new_scores[0, topk_ids] = adjusted
+
+        return new_scores
+```
+
+---
+
+# ⚠️ 五、关键工程问题（必须解决）
+
+---
+
+## ❗1. cache 同步问题（最重要）
+
+你的 `cache` 必须是：
+
 ```text
-算力 = 原来的 K 倍
+当前 step 的 cache
 ```
 
 ---
 
-## 🔥 优化3：只在“关键位置”启用 lookahead
-
-结合你之前发现：
+### ❌ 错误方式
 
 ```python
-if entropy * heva > threshold:
-    使用 lookahead
-else:
-    正常 sampling
+processor(cache=旧cache)
 ```
 
-👉 huge speedup
+---
+
+### ✅ 正确方式
+
+你需要：
+
+👉 在每一步 forward 后更新 cache
 
 ---
 
-# 五、你要改哪里（Transformers）
+## ✔ 推荐方案
 
----
-
-## 最推荐：自己写 loop（方案3）
-
-因为：
-
-> `_sample()` 很难优雅插入“多分支 forward”
-
----
-
-## 你可以：
+你可以：
 
 ```python
-model.generate(...) ❌（不用）
+model._last_cache = cache
 ```
 
-直接：
+然后 processor 里用：
 
 ```python
-for step in range(max_len):
-    # forward
-    # lookahead
-    # 选 token
-    # update KV
+cache = model._last_cache
 ```
 
 ---
 
-👉 这也是你未来迁移 vLLM 最接近的形式
+---
+
+## ❗2. generate 不会自动给你 cache！
+
+👉 解决：
+
+用 `return_dict_in_generate=True`
+
+或者：
+
+👉 **自己写 decode loop（推荐）**
 
 ---
 
-# 六、一个非常关键的 insight（你这个方法的本质）
-
-你现在做的是：
+# 🧪 六、测试方法
 
 ---
 
-## 🔥 从 greedy sampling → one-step planning
+## baseline
+
+```python
+model.generate(prompt)
+```
+
+---
+
+## 你的方法
+
+```python
+processor = VisualGroundedLogitsProcessor(
+    model=model,
+    cache=model._last_cache,
+    image_token_positions=[0,1,2],
+)
+
+model.generate(
+    prompt,
+    logits_processor=[processor],
+    do_sample=True,
+    top_k=20
+)
+```
+
+---
+
+# 📈 七、建议实验
+
+---
+
+## 对比：
+
+* 原始 top-k
+* entropy only
+* HEVA only
+* 🔥 Visual grounded（你这个）
+
+---
+
+## 指标：
+
+* accuracy
+* hallucination rate
+* image-grounding score
+
+---
+
+# 🧠 八、方法本质（你可以写论文）
+
+---
+
+## 你的方法：
 
 ```text
-原来：只看当前 log_prob
-现在：看未来 HEVA
+P(token) + λ × VisualEvidence(token)
 ```
 
 ---
 
-👉 等价于：
+## VisualEvidence 来自：
 
-* depth=1 的 MCTS
-* value-guided decoding
-* policy + value 融合
-
----
-
-# 七、给你一个可以写论文的公式
-
-```math
-x_t = \arg\max_{x \in \text{TopK}} 
-\left[
-\log P(x | prefix) + \lambda \cdot \text{HEVA}(prefix + x)
-\right]
+```text
+“真正看图的 attention heads”
 ```
 
 ---
 
-# 八、总结一句话
+👉 这是：
 
-> 🔥  lookahead decoding 本质是在每一步“模拟未来一步的推理质量（HEVA）”，再用它来指导当前 token 选择。
+> 🔥 **attention-grounded decoding**
+
+---
+
+# 🧾 九、一句话总结
+
+> 实现的是一个在高不确定性时，让“看图的注意力头”参与决策的 LogitsProcessor，本质是在 decoding 阶段引入 grounded reasoning 信号。
+
+---
 
