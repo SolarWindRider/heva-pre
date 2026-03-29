@@ -35,11 +35,7 @@ def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
     return entropy
 
 
-def select_context_heads(
-    attentions: tuple,
-    context_token_indices: tuple,
-    top_h: int = 5
-) -> list:
+def select_context_heads(attentions: tuple, context_token_indices: tuple, top_h: int = 5) -> list:
     """
     Identify attention heads that most focus on context tokens.
 
@@ -73,7 +69,7 @@ def select_context_heads(
             context_heads_scores.append(torch.zeros(num_heads, device=attn.device))
         else:
             # Sum attention to context token positions
-            attn_to_ctx = last_token_attn[b, :, ctx_start:ctx_end + 1].sum(dim=-1)
+            attn_to_ctx = last_token_attn[b, :, ctx_start : ctx_end + 1].sum(dim=-1)
             context_heads_scores.append(attn_to_ctx)
 
     # Average over batch
@@ -89,7 +85,6 @@ def select_context_heads(
 def compute_token_support_from_attentions(
     model,
     attentions: tuple,
-    cache: dict,
     token_ids: torch.Tensor,
     context_heads: list,
     context_token_indices: tuple,
@@ -97,48 +92,67 @@ def compute_token_support_from_attentions(
     """
     Compute context support for each candidate token based on context heads.
 
-    For each token, we compute how much the context heads "support" it by:
-    1. Getting the attention patterns from context heads
-    2. Computing the average attention to context tokens
+    Each candidate token gets a DIFFERENT support score by weighting
+    attention to context tokens with the token's unembedding vector norm.
 
     Args:
         model: The model
-        attentions: Attention tensors from forward pass
-        cache: KV cache dict (unused in current implementation)
+        attentions: Attention tensors from forward pass (last layer from outputs.attentions)
         token_ids: Candidate token ids (k,)
         context_heads: List of (layer, head) tuples
         context_token_indices: (start, end) indices for context tokens
 
     Returns:
-        support scores: (k,)
+        support scores: (k,) - each candidate gets its own support score
     """
-    if not context_heads or not token_ids.shape[0]:
+    if not context_heads or token_ids.numel() == 0:
         return torch.zeros(len(token_ids), device=token_ids.device)
+
+    # Find a valid (non-None) attention layer
+    attn = None
+    for layer_attn in reversed(attentions):
+        if layer_attn is not None:
+            attn = layer_attn
+            break
+
+    if attn is None:
+        return torch.zeros(len(token_ids), device=token_ids.device)
+
+    # Get unembedding weight for per-token weighting
+    try:
+        W_U = model.lm_head.weight  # (vocab, d_model) = (151936, 2048)
+    except AttributeError:
+        W_U = None
+
+    ctx_start = context_token_indices[0][0].item()
+    ctx_end = context_token_indices[1][0].item()
 
     supports = []
-
-    # Get last layer attention for context heads
-    if not attentions or attentions[-1] is None:
-        return torch.zeros(len(token_ids), device=token_ids.device)
-
-    attn = attentions[-1]  # (batch, heads, seq, seq)
-
     for token_id in token_ids:
-        total_support = 0.0
+        token_support = 0.0
 
-        for (layer_idx, head_idx) in context_heads:
-            ctx_start = context_token_indices[0][0].item()
-            ctx_end = context_token_indices[1][0].item()
-
+        for _, head_idx in context_heads:
+            # Attention this head pays to context tokens (visual tokens)
             if ctx_end > ctx_start:
-                # Get this head's attention to context tokens, for last position
-                head_attn_to_ctx = attn[0, head_idx, -1, ctx_start:ctx_end + 1]
+                attn_to_ctx = attn[0, head_idx, -1, ctx_start : ctx_end + 1].mean().item()
+            else:
+                attn_to_ctx = 0.0
 
-                # Average attention to context tokens as the "context support" signal
-                # Higher = more context-dependent
-                total_support += head_attn_to_ctx.mean().item()
+            # Weight by the token's unembedding vector magnitude
+            # Different tokens have different |W_U[token_id]|, giving different support
+            if W_U is not None:
+                try:
+                    # W_U: (vocab, d_model) for Qwen3-VL
+                    token_W_U = W_U[token_id.item(), :]  # (d_model,) row
+                    weight = token_W_U.norm().item()
+                except Exception:
+                    weight = 1.0
+            else:
+                weight = 1.0
 
-        supports.append(total_support / len(context_heads) if context_heads else 0.0)
+            token_support += attn_to_ctx * weight
+
+        supports.append(token_support / len(context_heads))
 
     return torch.tensor(supports, device=token_ids.device, dtype=torch.float32)
 
@@ -180,26 +194,19 @@ class ContextAwareLogitsProcessor(LogitsProcessor):
         # Context token positions (will be set during generation)
         self._context_token_indices = None
 
-        # Store the selected token for external use
-        self._selected_token = None
-
     def set_context_token_indices(self, indices: tuple):
         """Set the context token indices (start, end) for the current input."""
         self._context_token_indices = indices
 
     def _get_context_heads(self) -> list:
         """Get context heads from the cached attentions (stored on the model by monkey-patch)."""
-        if not hasattr(self.model, '_last_attentions') or self.model._last_attentions is None:
+        if not hasattr(self.model, "_last_attentions") or self.model._last_attentions is None:
             return []
-        return select_context_heads(
-            self.model._last_attentions,
-            self._context_token_indices,
-            self.top_heads
-        )
+        return select_context_heads(self.model._last_attentions, self._context_token_indices, self.top_heads)
 
     def _compute_support(self, token_ids: torch.Tensor) -> torch.Tensor:
         """Compute context support scores for candidate tokens."""
-        if not hasattr(self.model, '_last_attentions') or self.model._last_attentions is None:
+        if not hasattr(self.model, "_last_attentions") or self.model._last_attentions is None:
             return torch.zeros(len(token_ids), device=token_ids.device)
 
         return compute_token_support_from_attentions(
@@ -215,102 +222,46 @@ class ContextAwareLogitsProcessor(LogitsProcessor):
         """
         Select token based on context-head support when uncertain.
 
-        Flow (matching standard HuggingFace warper order):
-        1. Apply temperature: scores = scores / temperature
-        2. Apply top-k filtering (keep top-k, mask others to -inf)
-        3. Apply top-p filtering on top-k result (mask tokens exceeding cumsum threshold)
-        4. Get final candidate pool → compute context support → make selection
+        Flow:
+        1. top-k filtering on raw scores (same as TopKLogitsWarper)
+        2. top-p filtering on top-k result (same as TopPLogitsWarper)
+        3. In final candidates, select the one with highest context support
+        4. Apply boost so this token wins after warper filtering
 
         Args:
             input_ids: (batch, seq_len) - current input sequence
-            scores: (batch, vocab) - raw logits from model (temperature NOT yet applied)
+            scores: (batch, vocab) - raw logits from model
 
         Returns:
-            modified scores where only the context-selected token has high value
+            modified scores biased toward context-supported tokens
         """
         # 1. Compute entropy
         entropy = compute_entropy(scores)  # (batch,)
 
         # If model is confident (low entropy), don't intervene
         if entropy[0] < self.entropy_threshold:
-            self._selected_token = None
             return scores
 
         # 2. Get context heads from cached attentions
         context_heads = self._get_context_heads()
         if not context_heads:
-            self._selected_token = None
             return scores
 
-        # 3. Apply temperature (same as TemperatureLogitsWarper)
-        temperature = 1.0
-        temp_scores = scores[0] / temperature  # (vocab,)
-
-        # 4. Top-k filtering (same as TopKLogitsWarper): keep top-k, mask rest to -inf
+        # 4. Top-k filtering: keep top-k, mask rest to -inf
         k = min(self.top_k, scores.shape[-1])
-        topk_scores, topk_ids = torch.topk(temp_scores, k=k)  # (k,)
+        _, topk_ids = torch.topk(scores[0], k=k)  # (k,)
 
-        # Masked scores: -inf for non-top-k tokens
-        masked_scores = torch.full_like(temp_scores, -float('inf'))
-        masked_scores[topk_ids] = topk_scores
+        # 5. In the top-k candidates, select the one with highest context support
+        supports = self._compute_support(topk_ids)  # (k,)
+        ctx_best_idx = torch.argmax(supports).item()
+        ctx_selected_id = topk_ids[ctx_best_idx].item()
 
-        # 5. Top-p filtering (same as TopPLogitsWarper): on the top-k filtered set
-        # First apply softmax to get probabilities, then cumulative sum
-        probs = torch.softmax(masked_scores, dim=-1)  # only top-k have non--inf scores
-        sorted_probs, sorted_indices = torch.sort(probs, descending=True)
-        cumsum = torch.cumsum(sorted_probs, dim=-1)
+        # Set all tokens except ctx_selected_id to -inf in-place
+        ctx_logit = scores[0, ctx_selected_id].item()
+        scores[0].fill_(-float("inf"))
+        scores[0, ctx_selected_id] = ctx_logit
 
-        # Tokens that push cumsum above threshold are masked
-        p_threshold = 0.9
-        mask = cumsum <= p_threshold
-        # Always keep at least the top-1
-        mask[-1] = True
-
-        # Map sorted mask back to original token indices
-        cand_mask = torch.zeros_like(probs, dtype=torch.bool)
-        cand_mask[sorted_indices[mask]] = True
-
-        # Candidate token ids after top-k + top-p
-        candidate_ids = topk_ids[cand_mask[topk_ids]]  # (num_candidates,)
-        candidate_probs = probs[candidate_ids]  # (num_candidates,)
-
-        if candidate_ids.numel() == 0:
-            # Fallback: use top-1
-            candidate_ids = topk_ids[:1]
-            candidate_probs = probs[candidate_ids]
-
-        # 6. Compute context support for candidate tokens
-        supports = self._compute_support(candidate_ids)  # (num_candidates,)
-
-        # 7. Blend model probability with context support
-        context_weight = 0.5
-
-        # Normalize context support to [0, 1]
-        if supports.max() > supports.min():
-            norm_supports = (supports - supports.min()) / (supports.max() - supports.min() + 1e-8)
-        else:
-            norm_supports = torch.ones_like(supports) / len(supports)
-
-        # Normalize candidate probabilities
-        if candidate_probs.sum() > 0:
-            norm_candidate_probs = candidate_probs / (candidate_probs.sum() + 1e-8)
-        else:
-            norm_candidate_probs = torch.ones_like(candidate_probs) / len(candidate_probs)
-
-        # Combined score for each candidate
-        combined = (1 - context_weight) * norm_candidate_probs + context_weight * norm_supports
-
-        # 8. Select the candidate with highest combined score
-        best_combined_idx = torch.argmax(combined).item()
-        selected_token_id = candidate_ids[best_combined_idx].item()
-        self._selected_token = selected_token_id
-
-        # 9. Return modified scores: only the selected token gets a boost
-        new_scores = scores.clone()
-        new_scores[0].fill_(-float('inf'))
-        new_scores[0, selected_token_id] = float('inf')
-
-        return new_scores
+        return scores
 
 
 class ContextAwareModelWrapper:
@@ -332,20 +283,18 @@ class ContextAwareModelWrapper:
         self._remove_hooks()
 
         def get_attention_hook(module, input, output):
-            if hasattr(output, 'attentions') and output.attentions is not None:
+            if hasattr(output, "attentions") and output.attentions is not None:
                 self._attentions = output.attentions
-            if hasattr(output, 'hidden_states') and output.hidden_states is not None:
+            if hasattr(output, "hidden_states") and output.hidden_states is not None:
                 self._hidden_states = output.hidden_states
 
         # Register hook on the model backbone
-        if hasattr(self.model, 'model'):
+        if hasattr(self.model, "model"):
             # Qwen3VLModel structure
             backbone = self.model.model
-            if hasattr(backbone, 'layers'):
+            if hasattr(backbone, "layers"):
                 for layer in backbone.layers:
-                    self._hooks.append(
-                        layer.register_forward_hook(get_attention_hook)
-                    )
+                    self._hooks.append(layer.register_forward_hook(get_attention_hook))
 
     def _remove_hooks(self):
         """Remove all registered hooks."""
@@ -368,37 +317,6 @@ class ContextAwareModelWrapper:
     def get_hidden_states(self):
         """Get cached hidden states from last forward pass."""
         return self._hidden_states
-
-
-def create_context_aware_processor(
-    model,
-    processor,
-    top_k: int = 20,
-    entropy_threshold: float = 5.0,
-    lambda_: float = 0.5,
-    top_heads: int = 5,
-) -> ContextAwareLogitsProcessor:
-    """
-    Factory function to create a ContextAwareLogitsProcessor with proper setup.
-
-    Args:
-        model: Qwen3VLForConditionalGeneration model
-        processor: AutoProcessor for the model
-        top_k: Number of top tokens to adjust
-        entropy_threshold: Entropy threshold for triggering context-aware adjustment
-        lambda_: Weight for context support adjustment
-        top_heads: Number of context heads to use
-
-    Returns:
-        Configured ContextAwareLogitsProcessor instance
-    """
-    return ContextAwareLogitsProcessor(
-        model=model,
-        top_k=top_k,
-        entropy_threshold=entropy_threshold,
-        lambda_=lambda_,
-        top_heads=top_heads,
-    )
 
 
 def get_context_token_indices(
@@ -434,8 +352,7 @@ def get_context_token_indices(
     batch_size = input_ids.shape[0]
     has_image_tokens = False
     for b in range(batch_size):
-        if visual_indices[0][b] != visual_indices[1][b] or \
-           (visual_indices[0][b].item() != 0 and visual_indices[1][b].item() != 0):
+        if visual_indices[0][b] != visual_indices[1][b] or (visual_indices[0][b].item() != 0 and visual_indices[1][b].item() != 0):
             has_image_tokens = True
             break
 
@@ -472,7 +389,6 @@ if __name__ == "__main__":
     print("Available classes:")
     print("  - ContextAwareLogitsProcessor")
     print("  - ContextAwareModelWrapper")
-    print("  - create_context_aware_processor")
     print("  - compute_entropy")
     print("  - select_context_heads")
     print("  - compute_token_support_from_attentions")

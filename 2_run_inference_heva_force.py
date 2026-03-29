@@ -38,7 +38,6 @@ def run_inference(
     do_sample=True,
     # Context-Aware Decoding 参数
     use_context_aware=False,
-    ctx_top_k=20,
     ctx_entropy_threshold=5.0,
     ctx_top_heads=5,
     ctx_user_indices=None,
@@ -57,7 +56,6 @@ def run_inference(
         top_k: top-k 采样
         do_sample: 是否采样
         use_context_aware: 是否使用 Context-Aware Decoding
-        ctx_top_k: Context-Aware 的 top-k 参数
         ctx_entropy_threshold: Context-Aware 的熵阈值
         ctx_top_heads: Context-Aware 的 top_heads 参数
         ctx_user_indices: 用户指定的 context token 范围 (start, end)，None 表示自动检测
@@ -70,12 +68,12 @@ def run_inference(
     if use_context_aware:
         ctx_logits_processor = ContextAwareLogitsProcessor(
             model=model,
-            top_k=ctx_top_k,
+            top_k=top_k,
             entropy_threshold=ctx_entropy_threshold,
             top_heads=ctx_top_heads,
         )
         log_print(
-            f"Context-Aware Decoding enabled: top_k={ctx_top_k}, entropy_threshold={ctx_entropy_threshold}, top_heads={ctx_top_heads}"
+            f"Context-Aware Decoding enabled: entropy_threshold={ctx_entropy_threshold}, top_heads={ctx_top_heads}"
         )
 
     results = []
@@ -148,7 +146,7 @@ def run_inference(
             # 优先从JSON格式提取答案: {"answer": "X"}
             import re
 
-            json_match = re.search(r'\{\"answer\":\s*\"([^\"]+)\"\}', generated_text)
+            json_match = re.search(r"\{\"answer\":\s*\"([^\"]+)\"\}", generated_text)
             if json_match:
                 answer_pred = json_match.group(1).upper()
             else:
@@ -161,6 +159,10 @@ def run_inference(
 
             gen_vattn_path = os.path.join(output_dir, f"pkls/{idx}_gen_vattn.pkl")
             gen_entropy_path = os.path.join(output_dir, f"pkls/{idx}_gen_entropy.pkl")
+
+            # 计算整个序列的平均 vattn
+            avg_vattn = result["gen_vattn"].mean().item()
+
             # 准备元数据 (人类可读)
             meta = {
                 "idx": idx,
@@ -171,6 +173,7 @@ def run_inference(
                 "correct": answer_pred != "" and answer_pred in sample["answer"].upper(),
                 "prompt_token_num": result["prompt_token_num"],
                 "gen_token_num": result["gen_token_num"],
+                "avg_vattn": avg_vattn,
                 "gen_entropy_path": gen_entropy_path,
                 "gen_vattn_path": gen_vattn_path,
                 "prompt": result["prompt_text"],
@@ -278,8 +281,7 @@ def main():
 
     # Context-Aware Decoding 配置
     parser.add_argument("--use_context_aware", action="store_true", default=True, help="Enable Context-Aware Decoding")
-    parser.add_argument("--ctx_top_k", type=int, default=20, help="Context-Aware: top-k candidate tokens")
-    parser.add_argument("--ctx_entropy_threshold", type=float, default=1.0, help="Context-Aware: entropy threshold to trigger adjustment")
+    parser.add_argument("--ctx_entropy_threshold", type=float, default=1.27, help="Context-Aware: entropy threshold to trigger adjustment")
     parser.add_argument("--ctx_top_heads", type=int, default=5, help="Context-Aware: number of context heads to use")
     parser.add_argument("--ctx_start_idx", type=int, default=None, help="Context-Aware: user-specified context start index (optional)")
     parser.add_argument("--ctx_end_idx", type=int, default=None, help="Context-Aware: user-specified context end index (optional)")
@@ -319,7 +321,6 @@ def main():
         "do_sample": args.do_sample,
         # Context-Aware 配置
         "use_context_aware": args.use_context_aware,
-        "ctx_top_k": args.ctx_top_k,
         "ctx_entropy_threshold": args.ctx_entropy_threshold,
         "ctx_top_heads": args.ctx_top_heads,
         "ctx_user_indices": ctx_user_indices,
@@ -372,7 +373,6 @@ def main():
         top_k=args.top_k,
         do_sample=args.do_sample,
         use_context_aware=args.use_context_aware,
-        ctx_top_k=args.ctx_top_k,
         ctx_entropy_threshold=args.ctx_entropy_threshold,
         ctx_top_heads=args.ctx_top_heads,
         ctx_user_indices=ctx_user_indices,

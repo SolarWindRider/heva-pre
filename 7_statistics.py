@@ -1564,8 +1564,231 @@ def analyze_attn_acc(exp_dir):
     return bench_results
 
 
-if __name__ == "__main__":
-    exp_dir = "./results/exp005"
+def analyze_vattn_distribution(exp_dir):
+    """
+    统计 gen_vattn.pkl 中 vattn 的四分位数分布。
 
-    # 分析attn_acc (输入注意力与视觉注意力)
-    analyze_attn_acc(exp_dir)
+    Args:
+        exp_dir: 实验路径，如 ./results/exp001
+    """
+    import pickle
+
+    exp_path = Path(exp_dir)
+
+    all_vattn = []  # 展平成一维的所有 vattn 值
+
+    for bench_dir in sorted(exp_path.iterdir()):
+        if not bench_dir.is_dir():
+            continue
+
+        pkls_dir = bench_dir / "pkls"
+        if not pkls_dir.exists():
+            continue
+
+        for json_file in bench_dir.glob("*_meta.json"):
+            try:
+                with open(json_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                vattn_path = data.get("gen_vattn_path")
+                if not vattn_path:
+                    continue
+
+                vattn_path = Path(vattn_path)
+                if not vattn_path.exists():
+                    continue
+
+                with open(vattn_path, "rb") as f:
+                    vattn = pickle.load(f)
+                    vattn = vattn.float().squeeze().numpy()
+                    all_vattn.append(vattn.flatten())
+
+            except Exception:
+                continue
+
+    all_vattn = np.concatenate(all_vattn)
+
+    print(f"\n{'='*60}")
+    print("VATTN 四分位数分布统计")
+    print(f"{'='*60}")
+    print(f"  样本总数: {len(all_vattn)}")
+    print(f"  均值: {all_vattn.mean():.6f}")
+    print(f"  标准差: {all_vattn.std():.6f}")
+    print(f"  最小值: {all_vattn.min():.6f}")
+    print(f"  Q1 (25%): {np.percentile(all_vattn, 25):.6f}")
+    print(f"  Q2 (50%): {np.percentile(all_vattn, 50):.6f}")
+    print(f"  Q3 (75%): {np.percentile(all_vattn, 75):.6f}")
+    print(f"  最大值: {all_vattn.max():.6f}")
+
+    # 按 bench 分组统计四分位数
+    print(f"\n{'='*60}")
+    print("各 Benchmark VATTN 四分位数")
+    print(f"{'='*60}")
+
+    bench_results = {}
+
+    for bench_dir in sorted(exp_path.iterdir()):
+        if not bench_dir.is_dir():
+            continue
+
+        bench_name = bench_dir.name
+        vattn_list = []
+
+        pkls_dir = bench_dir / "pkls"
+        if not pkls_dir.exists():
+            continue
+
+        for json_file in bench_dir.glob("*_meta.json"):
+            try:
+                with open(json_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                vattn_path = data.get("gen_vattn_path")
+                if not vattn_path:
+                    continue
+                vattn_path = Path(vattn_path)
+                if not vattn_path.exists():
+                    continue
+                with open(vattn_path, "rb") as f:
+                    v = pickle.load(f).float().squeeze().numpy().flatten()
+                    vattn_list.append(v)
+            except Exception:
+                continue
+
+        if vattn_list:
+            bench_vattn = np.concatenate(vattn_list)
+            bench_results[bench_name] = {
+                "mean": bench_vattn.mean(),
+                "std": bench_vattn.std(),
+                "Q1": np.percentile(bench_vattn, 25),
+                "Q2": np.percentile(bench_vattn, 50),
+                "Q3": np.percentile(bench_vattn, 75),
+                "count": len(bench_vattn),
+            }
+
+    print(f"{'Benchmark':<20} {'Mean':<10} {'Std':<10} {'Q1':<10} {'Q2':<10} {'Q3':<10} {'N':<10}")
+    print("-" * 80)
+    for bench_name, stats_dict in sorted(bench_results.items()):
+        print(f"{bench_name:<20} {stats_dict['mean']:<10.6f} {stats_dict['std']:<10.6f} "
+              f"{stats_dict['Q1']:<10.6f} {stats_dict['Q2']:<10.6f} {stats_dict['Q3']:<10.6f} {stats_dict['count']:<10}")
+
+    return bench_results
+
+
+def analyze_entropy_distribution(exp_dir):
+    """
+    统计 gen_entropy.pkl 中熵的四分位数分布。
+
+    Args:
+        exp_dir: 实验路径，如 ./results/exp001
+    """
+    import pickle
+
+    exp_path = Path(exp_dir)
+
+    all_entropy = []  # 展平成一维的所有熵值
+
+    for bench_dir in sorted(exp_path.iterdir()):
+        if not bench_dir.is_dir():
+            continue
+
+        pkls_dir = bench_dir / "pkls"
+        if not pkls_dir.exists():
+            continue
+
+        for json_file in bench_dir.glob("*_meta.json"):
+            try:
+                with open(json_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                entropy_path = data.get("gen_entropy_path")
+                if not entropy_path:
+                    continue
+
+                entropy_path = Path(entropy_path)
+                if not entropy_path.exists():
+                    continue
+
+                with open(entropy_path, "rb") as f:
+                    entropy = pickle.load(f)
+                    entropy = entropy.squeeze().numpy()
+                    all_entropy.append(entropy.flatten())
+
+            except Exception:
+                continue
+
+    all_entropy = np.concatenate(all_entropy)
+
+    print(f"\n{'='*60}")
+    print("ENTROPY 四分位数分布统计")
+    print(f"{'='*60}")
+    print(f"  样本总数: {len(all_entropy)}")
+    print(f"  均值: {all_entropy.mean():.6f}")
+    print(f"  标准差: {all_entropy.std():.6f}")
+    print(f"  最小值: {all_entropy.min():.6f}")
+    print(f"  Q1 (25%): {np.percentile(all_entropy, 25):.6f}")
+    print(f"  Q2 (50%): {np.percentile(all_entropy, 50):.6f}")
+    print(f"  Q3 (75%): {np.percentile(all_entropy, 75):.6f}")
+    print(f"  最大值: {all_entropy.max():.6f}")
+
+    # 按 bench 分组统计四分位数
+    print(f"\n{'='*60}")
+    print("各 Benchmark ENTROPY 四分位数")
+    print(f"{'='*60}")
+
+    bench_results = {}
+
+    for bench_dir in sorted(exp_path.iterdir()):
+        if not bench_dir.is_dir():
+            continue
+
+        bench_name = bench_dir.name
+        entropy_list = []
+
+        pkls_dir = bench_dir / "pkls"
+        if not pkls_dir.exists():
+            continue
+
+        for json_file in bench_dir.glob("*_meta.json"):
+            try:
+                with open(json_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                entropy_path = data.get("gen_entropy_path")
+                if not entropy_path:
+                    continue
+                entropy_path = Path(entropy_path)
+                if not entropy_path.exists():
+                    continue
+                with open(entropy_path, "rb") as f:
+                    e = pickle.load(f).squeeze().numpy().flatten()
+                    entropy_list.append(e)
+            except Exception:
+                continue
+
+        if entropy_list:
+            bench_entropy = np.concatenate(entropy_list)
+            bench_results[bench_name] = {
+                "mean": bench_entropy.mean(),
+                "std": bench_entropy.std(),
+                "Q1": np.percentile(bench_entropy, 25),
+                "Q2": np.percentile(bench_entropy, 50),
+                "Q3": np.percentile(bench_entropy, 75),
+                "count": len(bench_entropy),
+            }
+
+    print(f"{'Benchmark':<20} {'Mean':<10} {'Std':<10} {'Q1':<10} {'Q2':<10} {'Q3':<10} {'N':<10}")
+    print("-" * 80)
+    for bench_name, stats_dict in sorted(bench_results.items()):
+        print(f"{bench_name:<20} {stats_dict['mean']:<10.6f} {stats_dict['std']:<10.6f} "
+              f"{stats_dict['Q1']:<10.6f} {stats_dict['Q2']:<10.6f} {stats_dict['Q3']:<10.6f} {stats_dict['count']:<10}")
+
+    return bench_results
+
+
+if __name__ == "__main__":
+    exp_dir = "./results/exp001"
+
+    # 统计 vattn 四分位数分布
+    # analyze_vattn_distribution(exp_dir)
+
+    # 统计熵的四分位数分布
+    analyze_entropy_distribution(exp_dir)
