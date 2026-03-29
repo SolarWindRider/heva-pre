@@ -90,17 +90,20 @@ def compute_token_support_from_attentions(
     context_token_indices: tuple,
 ) -> torch.Tensor:
     """
-    Compute context support for each candidate token based on context heads.
+    Compute context support for each candidate token using per-head z · W_O · W_U.
 
-    Each candidate token gets a DIFFERENT support score based on its
-    unembedding vector norm |W_U[token_id]|. Tokens with larger embedding
-    norms receive higher support from context heads.
+    For each context head and each candidate token:
+        contribution = z[head] · W_O[head] · W_U[token]
+
+    The support for a token is the sum of contributions from all context heads.
+    This gives each token a DIFFERENT support value based on how each head's
+    z vector contributes to that token's logit.
 
     Args:
         model: The model
-        attentions: Attention tensors from forward pass (last layer from outputs.attentions)
+        attentions: Attention tensors (not used anymore, z comes from model._last_z)
         token_ids: Candidate token ids (k,)
-        context_heads: List of (layer, head) tuples
+        context_heads: List of (layer, head) tuples (layer is ignored, only head matters)
         context_token_indices: (start, end) indices for context tokens
 
     Returns:
@@ -109,49 +112,60 @@ def compute_token_support_from_attentions(
     if not context_heads or token_ids.numel() == 0:
         return torch.zeros(len(token_ids), device=token_ids.device)
 
-    # Find a valid (non-None) attention layer
-    attn = None
-    for layer_attn in reversed(attentions):
-        if layer_attn is not None:
-            attn = layer_attn
-            break
-
-    if attn is None:
+    # Get cached z from last layer's attention module (before W_O reshape)
+    # Shape: (batch, seq, heads, d_head) — because eager_attention_forward does transpose(1,2) before returning
+    try:
+        last_layer = model.model.language_model.layers[-1]
+        z = getattr(last_layer.self_attn, "_last_z", None)
+        if z is None:
+            return torch.zeros(len(token_ids), device=token_ids.device)
+    except AttributeError:
         return torch.zeros(len(token_ids), device=token_ids.device)
 
-    # Get unembedding weight for per-token differentiation
+    # z shape: (batch, seq, heads, d_head) = (1, 1, 16, 128)
+    num_heads = z.shape[2]  # heads dimension is at index 2
+    head_dim = z.shape[3]   # d_head dimension is at index 3
+    d_model = last_layer.self_attn.o_proj.weight.shape[0]
+
+    # Get W_O (output projection) and W_U (unembedding)
+    try:
+        W_O = last_layer.self_attn.o_proj.weight
+        # W_O shape: (d_model, d_model) = (2048, 2048)
+        # Need to split by head: (d_model, heads, d_head)
+        W_O = W_O.view(d_model, num_heads, head_dim)
+    except AttributeError:
+        W_O = None
+
     try:
         W_U = model.lm_head.weight  # (vocab, d_model)
     except AttributeError:
         W_U = None
 
-    # Compute average context attention across context heads (same for all tokens)
-    ctx_start = context_token_indices[0][0].item()
-    ctx_end = context_token_indices[1][0].item()
+    if W_O is None or W_U is None:
+        return torch.zeros(len(token_ids), device=token_ids.device)
 
-    if ctx_end <= ctx_start:
-        avg_ctx_attn = 0.0
-    else:
-        ctx_attn_sum = 0.0
-        for _, head_idx in context_heads:
-            ctx_attn_sum += attn[0, head_idx, -1, ctx_start:ctx_end + 1].mean().item()
-        avg_ctx_attn = ctx_attn_sum / len(context_heads)
-
-    # Each token gets a different support based on its embedding norm
     supports = []
     for token_id in token_ids:
-        if W_U is not None:
-            try:
-                token_emb = W_U[token_id.item(), :]  # (d_model,) row
-                token_norm = token_emb.norm().item()
-            except Exception:
-                token_norm = 1.0
-        else:
-            token_norm = 1.0
+        token_support = 0.0
 
-        # Support = context attention (shared) × embedding norm (per-token)
-        # This gives different support values to different tokens
-        supports.append(avg_ctx_attn * token_norm)
+        for _, head_idx in context_heads:
+            # z for last position, this head: (d_head,)
+            # z shape: (batch, seq, heads, d_head) = (1, 1, 16, 128)
+            head_z = z[0, -1, head_idx, :]  # (d_head,)
+
+            # W_O for this head: (d_model, d_head)
+            head_W_O = W_O[:, head_idx, :]  # (d_model, d_head)
+
+            # head_output = z @ W_O[head]: (d_model,)
+            head_output = head_z @ head_W_O.T  # (d_model,)
+
+            # contribution = head_output · W_U[token]: scalar
+            token_W_U = W_U[token_id.item(), :]  # (d_model,)
+            contribution = (head_output * token_W_U).sum().item()
+
+            token_support += contribution
+
+        supports.append(token_support / len(context_heads))
 
     return torch.tensor(supports, device=token_ids.device, dtype=torch.float32)
 
@@ -289,9 +303,10 @@ class ContextAwareModelWrapper:
         self._hooks = []
         self._attentions = None
         self._hidden_states = None
+        self._last_z = None
 
     def _register_hooks(self):
-        """Register forward hooks to capture attention tensors."""
+        """Register forward hooks to capture attention tensors and z."""
         # Remove existing hooks
         self._remove_hooks()
 
@@ -301,13 +316,26 @@ class ContextAwareModelWrapper:
             if hasattr(output, "hidden_states") and output.hidden_states is not None:
                 self._hidden_states = output.hidden_states
 
-        # Register hook on the model backbone
+        def capture_z_hook(module, input, output):
+            # o_proj input is z (before W_O projection)
+            # input[0]: (batch, heads, seq, d_head) or similar
+            self._last_z = input[0].clone()
+
+        # Register hook on the model backbone for attention weights
         if hasattr(self.model, "model"):
-            # Qwen3VLModel structure
             backbone = self.model.model
-            if hasattr(backbone, "layers"):
-                for layer in backbone.layers:
-                    self._hooks.append(layer.register_forward_hook(get_attention_hook))
+            if hasattr(backbone, "language_model"):
+                # Qwen3VLModel -> language_model (Qwen3VLTextModel)
+                text_model = backbone.language_model
+                if hasattr(text_model, "layers"):
+                    for layer in text_model.layers:
+                        self._hooks.append(layer.register_forward_hook(get_attention_hook))
+
+                    # Also register z capture on last layer's o_proj
+                    last_layer = text_model.layers[-1]
+                    self._hooks.append(
+                        last_layer.self_attn.o_proj.register_forward_hook(capture_z_hook)
+                    )
 
     def _remove_hooks(self):
         """Remove all registered hooks."""
@@ -326,6 +354,10 @@ class ContextAwareModelWrapper:
     def get_attentions(self):
         """Get cached attentions from last forward pass."""
         return self._attentions
+
+    def get_last_z(self):
+        """Get cached z from last layer's attention output (before W_O)."""
+        return self._last_z
 
     def get_hidden_states(self):
         """Get cached hidden states from last forward pass."""

@@ -8,6 +8,7 @@ from transformers.generation.configuration_utils import GenerationConfig, Genera
 from transformers.generation.logits_process import LogitsProcessorList
 from transformers.generation.stopping_criteria import StoppingCriteriaList
 import torch.nn.functional as F
+from transformers.models.qwen3_vl.modeling_qwen3_vl import apply_rotary_pos_emb, eager_attention_forward
 
 if TYPE_CHECKING:
     from transformers.generation.streamers import BaseStreamer
@@ -107,6 +108,45 @@ def _sample_with_vattn_and_entropy(
     this_peer_finished = False
     unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=input_ids.device)
     model_kwargs = self._get_initial_cache_position(cur_len, input_ids.device, model_kwargs)
+
+    # Monkey-patch last layer's attention to capture z (before reshape)
+    # Only patch once per model instance
+    if not hasattr(self, "_z_patched") or not self._z_patched:
+        from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextAttention
+
+        original_forward = Qwen3VLTextAttention.forward
+
+        def patched_forward(self, hidden_states, position_embeddings, attention_mask=None,
+                          past_key_values=None, cache_position=None, **kwargs):
+            input_shape = hidden_states.shape[:-1]
+            hidden_shape = (*input_shape, -1, self.head_dim)
+
+            query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+            key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+            value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+
+            cos, sin = position_embeddings
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+            if past_key_values is not None:
+                cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+                key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
+
+            attn_output, attn_weights = eager_attention_forward(
+                self, query_states, key_states, value_states, attention_mask,
+                dropout=0.0 if not self.training else self.attention_dropout,
+                scaling=self.scaling, **kwargs
+            )
+
+            # Capture z before reshape (shape: batch, seq, heads, d_head)
+            self._last_z = attn_output.clone()
+
+            attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+            attn_output = self.o_proj(attn_output)
+            return attn_output, attn_weights
+
+        Qwen3VLTextAttention.forward = patched_forward
+        self._z_patched = True
 
     model_forward = self.__call__
     compile_forward = self._valid_auto_compile_criteria(model_kwargs, generation_config)
@@ -259,7 +299,7 @@ def get_vattn(attentions, visual_token_indices):
 
     # visual_token_indices 现在是 (batch_size,) tensors
     visual_start = visual_token_indices[0]  # (batch_size,)
-    visual_end = visual_token_indices[1]    # (batch_size,)
+    visual_end = visual_token_indices[1]  # (batch_size,)
 
     # 对每个 batch 元素分别计算
     batch_size = attn.shape[0]
@@ -267,7 +307,7 @@ def get_vattn(attentions, visual_token_indices):
     for b in range(batch_size):
         v_start = visual_start[b].item()
         v_end = visual_end[b].item()
-        results.append(attn[b, v_start:v_end + 1].mean())
+        results.append(attn[b, v_start : v_end + 1].mean())
 
     return torch.stack(results)  # (batch_size,)
 
@@ -292,7 +332,7 @@ def get_attn_acc(attentions, visual_token_indices, inputs_token_indices, topk):
     _, topk_indices = torch.topk(attn, k=topk, dim=-1)  # (batch_size, topk)
 
     visual_start, visual_end = visual_token_indices  # each (batch_size,)
-    input_start, input_end = inputs_token_indices    # each (batch_size,)
+    input_start, input_end = inputs_token_indices  # each (batch_size,)
 
     batch_size = attn.shape[0]
     attn_acc_visual_list = []
@@ -305,14 +345,14 @@ def get_attn_acc(attentions, visual_token_indices, inputs_token_indices, topk):
 
         # 构建当前batch的mask
         visual_mask = torch.zeros(seq_len, device=attn.device)
-        visual_mask[v_s:v_e + 1] = 1.0
+        visual_mask[v_s : v_e + 1] = 1.0
 
         input_mask = torch.zeros(seq_len, device=attn.device)
-        input_mask[i_s:i_e + 1] = 1.0
+        input_mask[i_s : i_e + 1] = 1.0
 
         # 统计top-k中视觉token和input token的比例
         topk_is_visual = visual_mask[topk_indices[b]]  # (topk,)
-        topk_is_input = input_mask[topk_indices[b]]    # (topk,)
+        topk_is_input = input_mask[topk_indices[b]]  # (topk,)
 
         attn_acc_visual_list.append(topk_is_visual.sum().item() / topk)
         attn_acc_input_list.append(topk_is_input.sum().item() / topk)
