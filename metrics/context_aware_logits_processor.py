@@ -92,8 +92,9 @@ def compute_token_support_from_attentions(
     """
     Compute context support for each candidate token based on context heads.
 
-    Each candidate token gets a DIFFERENT support score by weighting
-    attention to context tokens with the token's unembedding vector norm.
+    Each candidate token gets a DIFFERENT support score based on its
+    unembedding vector norm |W_U[token_id]|. Tokens with larger embedding
+    norms receive higher support from context heads.
 
     Args:
         model: The model
@@ -118,41 +119,39 @@ def compute_token_support_from_attentions(
     if attn is None:
         return torch.zeros(len(token_ids), device=token_ids.device)
 
-    # Get unembedding weight for per-token weighting
+    # Get unembedding weight for per-token differentiation
     try:
-        W_U = model.lm_head.weight  # (vocab, d_model) = (151936, 2048)
+        W_U = model.lm_head.weight  # (vocab, d_model)
     except AttributeError:
         W_U = None
 
+    # Compute average context attention across context heads (same for all tokens)
     ctx_start = context_token_indices[0][0].item()
     ctx_end = context_token_indices[1][0].item()
 
+    if ctx_end <= ctx_start:
+        avg_ctx_attn = 0.0
+    else:
+        ctx_attn_sum = 0.0
+        for _, head_idx in context_heads:
+            ctx_attn_sum += attn[0, head_idx, -1, ctx_start:ctx_end + 1].mean().item()
+        avg_ctx_attn = ctx_attn_sum / len(context_heads)
+
+    # Each token gets a different support based on its embedding norm
     supports = []
     for token_id in token_ids:
-        token_support = 0.0
+        if W_U is not None:
+            try:
+                token_emb = W_U[token_id.item(), :]  # (d_model,) row
+                token_norm = token_emb.norm().item()
+            except Exception:
+                token_norm = 1.0
+        else:
+            token_norm = 1.0
 
-        for _, head_idx in context_heads:
-            # Attention this head pays to context tokens (visual tokens)
-            if ctx_end > ctx_start:
-                attn_to_ctx = attn[0, head_idx, -1, ctx_start : ctx_end + 1].mean().item()
-            else:
-                attn_to_ctx = 0.0
-
-            # Weight by the token's unembedding vector magnitude
-            # Different tokens have different |W_U[token_id]|, giving different support
-            if W_U is not None:
-                try:
-                    # W_U: (vocab, d_model) for Qwen3-VL
-                    token_W_U = W_U[token_id.item(), :]  # (d_model,) row
-                    weight = token_W_U.norm().item()
-                except Exception:
-                    weight = 1.0
-            else:
-                weight = 1.0
-
-            token_support += attn_to_ctx * weight
-
-        supports.append(token_support / len(context_heads))
+        # Support = context attention (shared) × embedding norm (per-token)
+        # This gives different support values to different tokens
+        supports.append(avg_ctx_attn * token_norm)
 
     return torch.tensor(supports, device=token_ids.device, dtype=torch.float32)
 
@@ -223,9 +222,8 @@ class ContextAwareLogitsProcessor(LogitsProcessor):
 
         Flow:
         1. top-k filtering on raw scores (same as TopKLogitsWarper)
-        2. top-p filtering on top-k result (same as TopPLogitsWarper)
-        3. In final candidates, select the one with highest context support
-        4. Apply boost so this token wins after warper filtering
+        2. In final candidates, select top half with highest context support
+        3. Return new scores tensor with kept tokens, others set to -inf
 
         Args:
             input_ids: (batch, seq_len) - current input sequence
@@ -246,21 +244,37 @@ class ContextAwareLogitsProcessor(LogitsProcessor):
         if not context_heads:
             return scores
 
+        # Check if context range is valid (visual tokens exist)
+        ctx_start = self._context_token_indices[0][0].item()
+        ctx_end = self._context_token_indices[1][0].item()
+        if ctx_end <= ctx_start:
+            # No valid context tokens detected, don't干预
+            return scores
+
         # 4. Top-k filtering: keep top-k, mask rest to -inf
         k = min(self.top_k, scores.shape[-1])
         _, topk_ids = torch.topk(scores[0], k=k)  # (k,)
 
-        # 5. In the top-k candidates, select the one with highest context support
+        # 5. In the top-k candidates, select top half with highest context support
         supports = self._compute_support(topk_ids)  # (k,)
-        ctx_best_idx = torch.argmax(supports).item()
-        ctx_selected_id = topk_ids[ctx_best_idx].item()
+        keep_count = max(1, k // 2)  # 保留 topk 的一半
 
-        # Set all tokens except ctx_selected_id to -inf (return new tensor, don't modify in-place)
-        ctx_logit = scores[0, ctx_selected_id].item()
-        new_scores = torch.full_like(scores, -float("inf"))
-        new_scores[0, ctx_selected_id] = ctx_logit
+        # Get the support value at the boundary
+        sorted_supports, _ = torch.sort(supports, descending=True)
+        threshold = sorted_supports[keep_count - 1].item()  # support 阈值
 
-        return new_scores
+        # Build a mask for topk positions: True if support >= threshold
+        keep_mask = (supports >= threshold)  # (k,)
+
+        # Create a mask for all vocabulary: True = set to -inf
+        drop_mask = torch.ones(scores.shape[-1], dtype=torch.bool, device=scores.device)
+        drop_mask[topk_ids] = False  # topk tokens: don't drop
+        drop_mask[topk_ids[~keep_mask]] = True  # bottom half of topk: drop
+
+        # Set dropped tokens to -inf (in-place)
+        scores[0, drop_mask] = -float("inf")
+
+        return scores
 
 
 class ContextAwareModelWrapper:
