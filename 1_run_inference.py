@@ -213,7 +213,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     # 模型超参数
-    parser.add_argument("--max_new_tokens", type=int, default=12000, help="Max new tokens for generation")
+    parser.add_argument("--max_new_tokens", type=int, default=8192, help="Max new tokens for generation")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for generation")
     parser.add_argument("--top_p", type=float, default=1.0, help="Top-p sampling")
     parser.add_argument("--top_k", type=int, default=40, help="Top-k sampling")  # 温度、topk、topp和Qwen3VL原文保持一致

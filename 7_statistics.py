@@ -1487,7 +1487,9 @@ def analyze_attn_acc(exp_dir):
     all_incorrect_visual = np.concatenate([d["incorrect_visual_accs"] for d in bench_results.values()])
 
     print("-" * 75)
-    print(f"{'Overall':<20} {all_correct_input.mean():<15.4f} {all_incorrect_input.mean():<15.4f} {all_correct_visual.mean():<15.4f} {all_incorrect_visual.mean():<15.4f}")
+    print(
+        f"{'Overall':<20} {all_correct_input.mean():<15.4f} {all_incorrect_input.mean():<15.4f} {all_correct_visual.mean():<15.4f} {all_incorrect_visual.mean():<15.4f}"
+    )
 
     # T检验
     if len(all_correct_visual) > 0 and len(all_incorrect_visual) > 0:
@@ -1547,8 +1549,8 @@ def analyze_attn_acc(exp_dir):
     q50 = np.percentile(all_visual, 50)
     q75 = np.percentile(all_visual, 75)
 
-    bins = [0, q25, q50, q75, float('inf')]
-    labels = ['Q1(最低)', 'Q2', 'Q3', 'Q4(最高)']
+    bins = [0, q25, q50, q75, float("inf")]
+    labels = ["Q1(最低)", "Q2", "Q3", "Q4(最高)"]
 
     print(f"\n按Visual_ACC四分位数分组:")
     print(f"  分位点: Q25={q25:.4f}, Q50={q50:.4f}, Q75={q75:.4f}")
@@ -1668,8 +1670,10 @@ def analyze_vattn_distribution(exp_dir):
     print(f"{'Benchmark':<20} {'Mean':<10} {'Std':<10} {'Q1':<10} {'Q2':<10} {'Q3':<10} {'N':<10}")
     print("-" * 80)
     for bench_name, stats_dict in sorted(bench_results.items()):
-        print(f"{bench_name:<20} {stats_dict['mean']:<10.6f} {stats_dict['std']:<10.6f} "
-              f"{stats_dict['Q1']:<10.6f} {stats_dict['Q2']:<10.6f} {stats_dict['Q3']:<10.6f} {stats_dict['count']:<10}")
+        print(
+            f"{bench_name:<20} {stats_dict['mean']:<10.6f} {stats_dict['std']:<10.6f} "
+            f"{stats_dict['Q1']:<10.6f} {stats_dict['Q2']:<10.6f} {stats_dict['Q3']:<10.6f} {stats_dict['count']:<10}"
+        )
 
     return bench_results
 
@@ -1778,17 +1782,20 @@ def analyze_entropy_distribution(exp_dir):
     print(f"{'Benchmark':<20} {'Mean':<10} {'Std':<10} {'Q1':<10} {'Q2':<10} {'Q3':<10} {'N':<10}")
     print("-" * 80)
     for bench_name, stats_dict in sorted(bench_results.items()):
-        print(f"{bench_name:<20} {stats_dict['mean']:<10.6f} {stats_dict['std']:<10.6f} "
-              f"{stats_dict['Q1']:<10.6f} {stats_dict['Q2']:<10.6f} {stats_dict['Q3']:<10.6f} {stats_dict['count']:<10}")
+        print(
+            f"{bench_name:<20} {stats_dict['mean']:<10.6f} {stats_dict['std']:<10.6f} "
+            f"{stats_dict['Q1']:<10.6f} {stats_dict['Q2']:<10.6f} {stats_dict['Q3']:<10.6f} {stats_dict['count']:<10}"
+        )
 
     return bench_results
 
 
 if __name__ == "__main__":
-    exp_dir = "./results/exp001"
+    exp_dir = "./results/exp002"
 
-    # 统计 vattn 四分位数分布
+    # # 统计 vattn 四分位数分布
     # analyze_vattn_distribution(exp_dir)
 
-    # 统计熵的四分位数分布
-    analyze_entropy_distribution(exp_dir)
+    # # 统计熵的四分位数分布
+    # analyze_entropy_distribution(exp_dir)
+    calculate_acc(exp_dir)
