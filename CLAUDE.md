@@ -14,18 +14,25 @@ where:
 - v_t = sum of attention from token t to all visual tokens, averaged over heads
 ```
 
+## Hardware
+
+This project runs on **Huawei Ascend/NPU hardware**. Set device before running:
+```bash
+ASCEND_RT_VISIBLE_DEVICES=0 python 1_run_inference.py ...
+```
+
 ## Architecture
 
 Pipeline flow:
 ```
-data/loader.py           → Load datasets (VisuRiddles, RAVEN, MARVEL, LogicVista, PuzzleVQA, AlgoPuzzleVQA)
-data/perturbations.py    → Image perturbations (shuffle_patches, gaussian_blur, zero_image, etc.)
+[data/loader.py](data/loader.py)           → Load datasets (VisuRiddles, RAVEN, MARVEL, LogicVista, PuzzleVQA, AlgoPuzzleVQA)
+[data/perturbations.py](data/perturbations.py)    → Image perturbations (shuffle_patches, gaussian_blur, zero_image, etc.)
     ↓
-metrics/inference.py    → Qwen3-VL inference with attention capture
-metrics/heva.py          → Monkey-patches Qwen3VLForConditionalGeneration._sample to capture entropy and visual attention
-metrics/context_aware_logits_processor.py → Context-Aware Decoding LogitsProcessor (optional)
+[metrics/inference.py](metrics/inference.py)    → Qwen3-VL inference with attention capture
+[metrics/heva.py](metrics/heva.py)          → Monkey-patches Qwen3VLForConditionalGeneration._sample to capture entropy and visual attention
+[metrics/context_aware_logits_processor.py](metrics/context_aware_logits_processor.py) → Context-Aware Decoding LogitsProcessor (optional)
     ↓
-analysis/               → Statistics and visualization
+[analysis/](analysis/)               → Statistics and visualization
 ```
 
 **Key architectural decision**: The model is monkey-patched at `Qwen3VLForConditionalGeneration._sample` via `_sample_with_vattn_and_entropy` in `metrics/heva.py` to capture per-token entropy and visual attention during generation. This avoids storing full attention tensors.
@@ -34,20 +41,21 @@ analysis/               → Statistics and visualization
 
 | Script | Purpose |
 |--------|---------|
-| `1_run_inference.py` | Run inference with attention capture (supports Context-Aware Decoding via `--use_context_aware`) |
-| `2_run_inference_heva_force.py` | Same inference pipeline but without Context-Aware Decoding support |
-| `7_statistics.py` | Statistical analysis of inference results (accuracy, HEVA-correctness correlation, etc.) |
-| `devp.py` / `devp2.py` / `devp3.py` | Ad-hoc development/debug scripts |
+| [1_run_inference.py](1_run_inference.py) | Run inference with attention capture. Supports `--use_context_aware` flag and `--ctx_*` parameters for Context-Aware Decoding |
+| [2_run_inference_heva_force.py](2_run_inference_heva_force.py) | Same inference pipeline without CAD support |
+| [3_run_inference_trace.py](3_run_inference_trace.py) | Latest inference script with enhanced features; supports `--use_context_aware true/false` (boolean string). Supports `Qwen3-VL-2B-Instruct` and `Qwen3-VL-2B-Thinking` models |
+| [7_statistics.py](7_statistics.py) | Statistical analysis (accuracy, HEVA-correctness correlation) |
+| [devp.py](devp.py) / [devp2.py](devp2.py) / [devp3.py](devp3.py) | Development/debug scripts (devp3.py includes Context-Aware Decoding tests) |
 
-Results go to `results/{exp_name}/{dataset}/` with `pkls/` subdirectory for pickle files and `{sample_id}_meta.json` for per-sample metadata.
+Results go to `results/{exp_name}/{dataset}/` with:
+- `pkls/` subdirectory containing `{idx}_gen_entropy.pkl`, `{idx}_gen_vattn.pkl`, `{idx}_attn_acc_input.pkl`, `{idx}_attn_acc_visual.pkl`
+- `{sample_id}_meta.json` for per-sample metadata (ground truth, predicted answer, correctness, token counts)
 
 ## Environment
 
 ```bash
 conda activate PyTorch-2.1.0
 ```
-
-**GPU selection** (Huawei NPU/Ascend): Set `ASCEND_RT_VISIBLE_DEVICES=0` before the command.
 
 ## Common Commands
 
@@ -58,8 +66,8 @@ python 1_run_inference.py --exp_name exp001 --dataset VisuRiddles --num_samples 
 # Run inference with Context-Aware Decoding
 python 1_run_inference.py --exp_name exp001 --dataset VisuRiddles --use_context_aware --ctx_entropy_threshold 5.0 --ctx_top_k 20 --ctx_top_heads 5
 
-# Run inference (without CAD) — outputs to results/{exp_name}/{dataset}/
-python 2_run_inference_heva_force.py --exp_name exp001 --dataset MARVEL --num_samples 100
+# Run inference using latest script (3_run_inference_trace.py) — outputs to results/{exp_name}/{dataset}/
+ASCEND_RT_VISIBLE_DEVICES=0 python 3_run_inference_trace.py --exp_name exp002 --dataset VisuRiddles --use_context_aware true --num_samples 50
 
 # Statistical analysis
 python 7_statistics.py
@@ -71,7 +79,8 @@ python 7_statistics.py
 
 ## Paths
 
-- Model: `/home/ma-user/work/Downloads/Models/Qwen/Qwen3-VL-2B-Instruct` (default)
+- Default model: `/home/ma-user/work/Downloads/Models/Qwen/Qwen3-VL-2B-Instruct`
+- Alternative models: `Qwen3-VL-2B-Thinking`, `Qwen3-VL-4B-Instruct`
 - Data root: `/home/ma-user/work/datas`
 - Results: `./results/`
 
@@ -84,17 +93,18 @@ python 7_statistics.py
 
 ### Visual Token Identification
 - Visual token ID: `151643` (`<|image_pad|>`) in Qwen3-VL
-- `get_visual_token_indices()` in `metrics/inference.py` finds continuous image token range
+- `get_visual_token_indices()` in [metrics/inference.py](metrics/inference.py) finds continuous image token range
 
 ### Monkey-Patching Mechanism
-- Line 12 in `metrics/inference.py`: `Qwen3VLForConditionalGeneration._sample = _sample_with_vattn_and_entropy`
+- In [metrics/inference.py:12](metrics/inference.py#L12): `Qwen3VLForConditionalGeneration._sample = _sample_with_vattn_and_entropy`
 - This replaces the generation method to capture attention and entropy at each step
 - Results stored in model instance attributes: `model.gen_entropy`, `model.gen_vattn`, `model.attn_acc_input`, `model.attn_acc_visual`
 
-### Context-Aware Decoding (`metrics/context_aware_logits_processor.py`)
+### Context-Aware Decoding ([metrics/context_aware_logits_processor.py](metrics/context_aware_logits_processor.py))
 - `ContextAwareLogitsProcessor` is a `LogitsProcessor` that boosts context-supported tokens when entropy > threshold
 - Context = visual tokens by default (detected via `get_visual_token_indices`)
-- Enabled via `--use_context_aware` flag in `1_run_inference.py`
+- Enabled via `--use_context_aware` flag in `1_run_inference.py` (boolean flag)
+- In `3_run_inference_trace.py`, use `--use_context_aware true` (boolean string)
 - Key classes: `ContextAwareLogitsProcessor`, `select_context_heads()`, `compute_token_support_from_attentions()`
 
 ### Memory Optimization (in generate_with_attn)

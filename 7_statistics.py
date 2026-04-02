@@ -1790,12 +1790,244 @@ def analyze_entropy_distribution(exp_dir):
     return bench_results
 
 
+def analyze_answer_proportion(exp_dir):
+    """
+    统计得到最终回答的样本比例，即 meta JSON 中 predicted_answer 不为空的样本数量 / 总样本数。
+
+    Args:
+        exp_dir: 实验路径，如 ./results/exp001
+    """
+    exp_path = Path(exp_dir)
+
+    results = {}
+    total_has_answer = 0
+    total_count = 0
+
+    for bench_dir in sorted(exp_path.iterdir()):
+        if not bench_dir.is_dir():
+            continue
+
+        bench_name = bench_dir.name
+        has_answer_count = 0
+        bench_total = 0
+
+        for json_file in bench_dir.glob("*_meta.json"):
+            try:
+                with open(json_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    bench_total += 1
+                    total_count += 1
+                    if data.get("predicted_answer") not in (None, ""):
+                        has_answer_count += 1
+                        total_has_answer += 1
+            except (json.JSONDecodeError, IOError):
+                continue
+
+        if bench_total > 0:
+            proportion = has_answer_count / bench_total
+            results[bench_name] = {"has_answer": has_answer_count, "total": bench_total, "proportion": proportion}
+
+    # 打印结果
+    print(f"\n{'='*60}")
+    print("最终回答比例统计 (predicted_answer 不为空)")
+    print(f"{'='*60}")
+
+    print(f"\n{'Benchmark':<20} {'有回答':<10} {'总数':<10} {'比例':<10}")
+    print("-" * 50)
+    for bench_name, stats_dict in sorted(results.items()):
+        print(f"{bench_name:<20} {stats_dict['has_answer']:<10} {stats_dict['total']:<10} {stats_dict['proportion']:.4f}")
+
+    if total_count > 0:
+        overall_proportion = total_has_answer / total_count
+        print("-" * 50)
+        print(f"{'Overall':<20} {total_has_answer:<10} {total_count:<10} {overall_proportion:.4f}")
+
+    return results
+
+
+def compare_experiments(exp1_dir: str, exp2_dir: str, exp1_name: str = "exp001", exp2_name: str = "exp002", output_file: str = None):
+    """
+    对比两组实验的结果，分类统计每个样本在两组实验中的正确性变化。
+
+    分类:
+      - Both Correct  : exp1 做对, exp2 也做对
+      - exp1 Correct, exp2 Wrong : exp1 做对, exp2 做错
+      - exp1 Wrong, exp2 Correct  : exp1 做错, exp2 纠正
+      - Both Wrong    : exp1 做错, exp2 也做错
+
+    Args:
+        exp1_dir: 实验1路径，如 ./results/exp001
+        exp2_dir: 实验2路径，如 ./results/exp002
+        exp1_name: 实验1名称（仅用于显示）
+        exp2_name: 实验2名称（仅用于显示）
+        output_file: 若指定，则输出写入该文件而非 stdout
+    """
+    exp1_path = Path(exp1_dir)
+    exp2_path = Path(exp2_dir)
+
+    # Output redirection
+    if output_file:
+        _out = open(output_file, "w", encoding="utf-8")
+        _print = lambda *args, **kwargs: print(*args, **kwargs, file=_out)
+    else:
+        _print = print
+
+    # ---- helpers ----
+    def load_exp_meta(exp_path):
+        meta = {}
+        for bench_dir in sorted(exp_path.iterdir()):
+            if not bench_dir.is_dir():
+                continue
+            for json_file in bench_dir.glob("*_meta.json"):
+                try:
+                    with open(json_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    sid = data.get("sample_id", "")
+                    meta[sid] = {
+                        "correct": data.get("correct", False),
+                        "bench": bench_dir.name,
+                        "predicted_answer": data.get("predicted_answer", ""),
+                        "ground_truth": data.get("ground_truth", ""),
+                    }
+                except (json.JSONDecodeError, IOError):
+                    continue
+        return meta
+
+    # ---- load data ----
+    meta1 = load_exp_meta(exp1_path)
+    meta2 = load_exp_meta(exp2_path)
+    common_ids = set(meta1.keys()) & set(meta2.keys())
+
+    # ---- categorize ----
+    both_correct = []
+    exp1_correct_exp2_wrong = []
+    exp1_wrong_exp2_correct = []
+    both_wrong = []
+    bench_detail = {}
+
+    for sid in common_ids:
+        c1, c2 = meta1[sid]["correct"], meta2[sid]["correct"]
+        bench = meta1[sid]["bench"]
+        if c1 and c2:
+            both_correct.append(sid)
+            cat = "both_correct"
+        elif c1 and not c2:
+            exp1_correct_exp2_wrong.append(sid)
+            cat = "exp1_correct_exp2_wrong"
+        elif not c1 and c2:
+            exp1_wrong_exp2_correct.append(sid)
+            cat = "exp1_wrong_exp2_correct"
+        else:
+            both_wrong.append(sid)
+            cat = "both_wrong"
+        if bench not in bench_detail:
+            bench_detail[bench] = {"both_correct": [], "exp1_correct_exp2_wrong": [], "exp1_wrong_exp2_correct": [], "both_wrong": []}
+        bench_detail[bench][cat].append(sid)
+
+    total = len(common_ids)
+
+    # ---- overall summary ----
+    _print(f"\n{'='*70}")
+    _print(f"实验对比: {exp1_name} vs {exp2_name}")
+    _print(f"{'='*70}")
+    _print(f"共同样本数: {total}")
+    _print(f"\n{'类别':<50} {'数量':<10} {'占比':<10}")
+    _print("-" * 70)
+    _print(f"{'Both√ (都做对)':<50} {len(both_correct):<10} {len(both_correct)/total:.2%}")
+    _print(f"{'√→× (做对→做错)':<50} {len(exp1_correct_exp2_wrong):<10} {len(exp1_correct_exp2_wrong)/total:.2%}")
+    _print(f"{'×→√ (做错→纠正)':<50} {len(exp1_wrong_exp2_correct):<10} {len(exp1_wrong_exp2_correct)/total:.2%}")
+    _print(f"{'Both× (都做错)':<50} {len(both_wrong):<10} {len(both_wrong)/total:.2%}")
+
+    # ---- per-benchmark breakdown ----
+    _print(f"\n{'='*70}")
+    _print("各 Benchmark 详细统计")
+    _print(f"{'='*70}")
+    _print(f"\n{'Benchmark':<20} {'Both√':<8} {'√→×':<10} {'×→√':<10} {'Both×':<8} {'Total':<8}")
+    _print("-" * 70)
+    for bench_name in sorted(bench_detail.keys()):
+        bd = bench_detail[bench_name]
+        n_bc = len(bd["both_correct"])
+        n_1c2w = len(bd["exp1_correct_exp2_wrong"])
+        n_1w2c = len(bd["exp1_wrong_exp2_correct"])
+        n_bw = len(bd["both_wrong"])
+        n_total = n_bc + n_1c2w + n_1w2c + n_bw
+        _print(f"{bench_name:<20} {n_bc:<8} {n_1c2w:<10} {n_1w2c:<10} {n_bw:<8} {n_total:<8}")
+
+    _print("-" * 70)
+    _print(
+        f"{'Overall':<20} {len(both_correct):<8} {len(exp1_correct_exp2_wrong):<10} {len(exp1_wrong_exp2_correct):<10} {len(both_wrong):<8} {total:<8}"
+    )
+
+    # ---- correction / regression rate ----
+    n_fix = len(exp1_wrong_exp2_correct)
+    n_stay_wrong = len(both_wrong)
+    n_regress = len(exp1_correct_exp2_wrong)
+    n_stay_correct = len(both_correct)
+
+    if n_fix + n_stay_wrong > 0:
+        _print(f"\n纠正率（{exp1_name}错样本中被{exp2_name}纠正的比例）: {n_fix/(n_fix+n_stay_wrong):.2%} ({n_fix}/{n_fix+n_stay_wrong})")
+    if n_regress + n_stay_correct > 0:
+        _print(
+            f"退化率（{exp1_name}对样本中{exp2_name}做错的比例）: {n_regress/(n_regress+n_stay_correct):.2%} ({n_regress}/{n_regress+n_stay_correct})"
+        )
+
+    _print(f"\n{'='*70}")
+    _print("各 Benchmark 纠正率 & 退化率")
+    _print(f"{'='*70}")
+    _print(f"\n{'Benchmark':<20} {'纠正率':<12} {'退化率':<12}")
+    _print("-" * 44)
+    for bench_name in sorted(bench_detail.keys()):
+        bd = bench_detail[bench_name]
+        n1 = len(bd["exp1_wrong_exp2_correct"])
+        n0 = len(bd["both_wrong"])
+        n3 = len(bd["exp1_correct_exp2_wrong"])
+        n2 = len(bd["both_correct"])
+        corr = n1 / (n1 + n0) if (n1 + n0) > 0 else 0.0
+        reg = n3 / (n3 + n2) if (n3 + n2) > 0 else 0.0
+        _print(f"{bench_name:<20} {corr:<12.2%} {reg:<12.2%}")
+
+    # ---- sample details ----
+    if exp1_wrong_exp2_correct:
+        _print(f"\n{'='*70}")
+        _print(f"被纠正的样本（×→√，共{len(exp1_wrong_exp2_correct)}个）")
+        _print(f"{'='*70}")
+        _print(f"\n{'sample_id':<40} {'bench':<15} {'gt':<10} {exp1_name+'_pred':<15} {exp2_name+'_pred':<15}")
+        _print("-" * 100)
+        for sid in sorted(exp1_wrong_exp2_correct):
+            m1, m2 = meta1[sid], meta2[sid]
+            _print(
+                f"{sid:<40} {m1['bench']:<15} {m1['ground_truth']:<10} {(m1['predicted_answer'] or 'None'):<15} {(m2['predicted_answer'] or 'None'):<15}"
+            )
+
+    if exp1_correct_exp2_wrong:
+        _print(f"\n{'='*70}")
+        _print(f"退化的样本（√→×，共{len(exp1_correct_exp2_wrong)}个）")
+        _print(f"{'='*70}")
+        _print(f"\n{'sample_id':<40} {'bench':<15} {'gt':<10} {exp1_name+'_pred':<15} {exp2_name+'_pred':<15}")
+        _print("-" * 100)
+        for sid in sorted(exp1_correct_exp2_wrong):
+            m1, m2 = meta1[sid], meta2[sid]
+            _print(
+                f"{sid:<40} {m1['bench']:<15} {m1['ground_truth']:<10} {(m1['predicted_answer'] or 'None'):<15} {(m2['predicted_answer'] or 'None'):<15}"
+            )
+
+    if output_file:
+        _out.close()
+
+    return {
+        "both_correct": both_correct,
+        "exp1_correct_exp2_wrong": exp1_correct_exp2_wrong,
+        "exp1_wrong_exp2_correct": exp1_wrong_exp2_correct,
+        "both_wrong": both_wrong,
+        "bench_detail": bench_detail,
+    }
+
+
 if __name__ == "__main__":
-    exp_dir = "./results/exp002"
-
-    # # 统计 vattn 四分位数分布
-    # analyze_vattn_distribution(exp_dir)
-
-    # # 统计熵的四分位数分布
-    # analyze_entropy_distribution(exp_dir)
-    calculate_acc(exp_dir)
+    compare_experiments(
+        "./results/exp002",
+        "./results/exp011",
+        exp1_name="without vattn",
+        exp2_name="with vattn",
+        output_file="compare_exp002_vs_exp011.txt",
+    )
