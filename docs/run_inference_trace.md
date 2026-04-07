@@ -46,56 +46,112 @@ Attention 计算流程（单层）：
 
 ### 反向路径的计算
 
-对于候选 token `t`，从 **W_U[t]**（unembedding 矩阵）开始，逐层反向：
+`compute_dla_path_for_token()` 对每个候选 token 逐层反向计算"哪个 head 贡献最大"。
+
+#### 单层内部的计算
 
 ```
-输出层 N：
-    z[N] @ W_O[N] = 各 head 的输出向量 (n_heads, d_model)
-    每 head 的贡献 = z[N,h] · W_O[N,h] · W_U[t]  → scalar
-    贡献最大的 head[N] 被选中
+Step 1: z @ W_O = 各 head 的输出向量
+    z: (heads, d_head) — attention 原始输出（o_proj 之前）
+    W_O: (heads, d_head, d_model)
+    → head_outputs = z @ W_O: (heads, d_model)
 
-    残差传递：
-        target_vector = W_V[N,head[N]] @ (W_O[N,head[N]] @ target_vector)
+Step 2: 计算每 head 的贡献分数（dot product）
+    contribution[head] = head_outputs[head] · target_vector  # scalar
+    → 几何意义：head 输出向量与目标 logit 向量的对齐程度
 
-隐藏层 N-1：
-    z[N-1] @ W_O[N-1] = 各 head 输出
-    贡献 = z[N-1,h] · W_O[N-1,h] · target_vector
-    贡献最大的 head[N-1] 被选中
-    继续残差传递
-    ...
+Step 3: 选贡献最大的 head
+    max_head = argmax(contribution)
+    记录：path[layer] = {"head": max_head, "score": contribution[max_head]}
+```
 
-输出：
+#### 层与层之间的传递
+
+```
+Attention 单层计算顺序（残差结构）：
+    输入 → QKV投影 → RoPE → Attention → z → W_O → +残差 → LayerNorm → 下一层输入
+
+追溯时：
+    输出 ← W_U[token_id]
+            ↑
+    W_O @ z ← 该层选 head
+            ↑
+    通过残差连接，z 来自上一层的 V 输出
+    所以往前追溯 = 追踪 V 路径
+
+因此传递公式为：
+    target_vector = W_O[head] @ target_vector
+
+以 4 层模型为例，完整追溯路径：
+
+```
+初始：target_vector = W_U[token_id]  ← 该 token 的 logit 向量
+        ↓
+Layer 3 (最后一层)：
+    z[3] @ W_O[3] → contributions → 选 head=7
+    target_vector = W_O[3,7] @ target_vector
+        ↓
+Layer 2：
+    z[2] @ W_O[2] → contributions → 选 head=3
+    target_vector = W_O[2,3] @ target_vector
+        ↓
+Layer 1：
+    z[1] @ W_O[1] → contributions → 选 head=12
+    target_vector = W_O[1,12] @ target_vector
+        ↓
+Layer 0：
+    z[0] @ W_O[0] → contributions → 选 head=5
+    target_vector = W_O[0,5] @ target_vector
+
+最终输出：
     path = {
-        0:   {"head": h0, "score": s0},
-        1:   {"head": h1, "score": s1},
-        ...
-        N:   {"head": hN, "score": sN}
+        0: {"head": 5,  "score": s0},
+        1: {"head": 12, "score": s1},
+        2: {"head": 3,  "score": s2},
+        3: {"head": 7,  "score": s3},
     }
 ```
 
-这就是参考代码（用户提供的 transformer_lens 版本）的核心逻辑。
+**为什么用 `W_O[head]` 而不是 `W_V @ W_O[head]`？**
+
+`W_V` 在 GQA（Grouped Query Attention）结构中作用于 KV head 维度（融合后），而 `z` 是所有 Q head 的混合输出，两者维度不兼容无法直接分解。因此使用 `W_O[head]`（输出投影）来做层间追溯——它直接对应每个 head 的输出方向，信息流必经路径。
+
+**关键数据**：
+- 用 `z`（attention 原始输出）和 `W_O`/`W_V`/`W_U` 矩阵计算
+- 不依赖 softmax 后的 attention weights
 
 ### 验证路径是否聚焦视觉 token
 
-拿到 `path` 后，检查路径中每个 head 的 top-5 注意力是否命中 `critical_indices`（视觉 token 位置）：
+`verify_attention_focus_on_path()` 检查 path 中各 head **实际 atten 到了哪些 token**：
 
 ```
+attentions[-1] = 最后一层的 attention 权重
+  shape: (batch, heads, query_seq, key_seq)
+  这是 softmax 后的实际注意力权重
+
+attn_last = attentions[-1][b, :, -1, :]
+  即：最后一个 query（当前生成 token）对所有 key 的注意力
+  shape: (heads, key_len)
+
 For layer i in path:
     head = path[i]["head"]
-
-    从 outputs.attentions[-1] 取该 head 的注意力权重
-    shape: (batch, heads, query_seq, key_seq)
-
-    取最后一列（当前生成 token 对所有 key 的注意力）
-    取 top-5 注意力位置
+    attn_pattern = attn_last[head]  # (key_len,) — 该 head 的实际注意力分布
+    取 top-5 atten 位置
 
     检查：top-5 中有任意落在 critical_indices（视觉 token 范围）吗？
-
-    如果有 → 该层"命中"
+    有 → 该层"命中"
 
 命中比例 = 命中的层数 / 总层数
 通过验证 = 命中比例 >= 30%
 ```
+
+**两个函数用到了不同的数据**：
+| 函数 | 数据来源 |
+|------|---------|
+| `compute_dla_path_for_token` | `z` + `W_O` + `W_V` + `W_U` 矩阵（因果结构） |
+| `verify_attention_focus_on_path` | `outputs.attentions`（softmax 后的实际注意力权重） |
+
+也就是说：先从**数学上**追溯哪个 head 的因果贡献大，再从**实际 atten 行为**上验证这个 head 是否真的在看视觉 token。两者都通过才认为该候选 token 是"视觉依赖的"。
 
 ### 采样过滤
 
@@ -230,17 +286,22 @@ next_token_scores = logits_processor(...)
 取 top-10 候选
         ↓
 对每个候选 token：
-    compute_dLA_path_for_token(all_zs, model, token_id)
+    [阶段一] compute_dla_path_for_token(all_zs, model, token_id)
         → 逐层反向追溯：W_U ← z·W_O·W_V
         → 每层选贡献最大的 head
         → 得到 path = {layer: {"head": h, "score": s}}
         ↓
-verify_attention_focus_on_path(attentions, path, critical_indices)
-        → 检查 path 中各 head 的 top-5 注意力是否命中视觉 token
-        → 命中率 >= 30% → 通过
+    [阶段二] verify_attention_focus_on_path(attentions, path, critical_indices)
+        → 检查 path 中各 head 的 top-5 实际 atten 是否命中视觉 token
+        → 命中率 >= 30% → is_valid = True
         ↓
-幸存候选 → 重新归一化 → 采样
+所有候选都验证完后：
+    幸存候选（is_valid=True）→ 重新归一化 → 采样
 ```
+
+**两阶段缺一不可**：
+- 阶段一只回答"哪个 head 贡献大"（因果结构，用 `z` + 矩阵计算）
+- 阶段二才回答"该 head 是否真的在看视觉 token"（实际行为，用 softmax atten 权重验证）
 
 **没有 CAD**：`logits_processor` 只做标准处理，熵值不参与任何决策。
 
@@ -323,9 +384,12 @@ next_token_scores = logits_processor([CAD_processor, ...])
         └── 否 → 不干预
         ↓
 [Step 2] DLA 验证介入（每步都做，与熵无关）：
-    取 top-10 候选（基于 CAD 调整后的分数）
+    取 CAD 幸存候选（基于调整后的分数）
         ↓
-    对每个候选：compute_DLA_path_for_token + verify
+    对每个候选：两阶段验证
+        [阶段一] compute_dla_path_for_token → 找贡献最大的 head
+        [阶段二] verify_attention_focus_on_path → 验证该 head 是否 atten 到视觉 token
+        → 命中率 >= 30% → is_valid
         ↓
     幸存候选 → 重新归一化 → 采样
 ```

@@ -112,11 +112,9 @@ def _sample_with_vattn_and_entropy(
     # Monkey-patch attention to capture z (before reshape) for ALL layers.
     # The patch captures model_all_z_ref which is set to self._all_layers_z below.
     # This mirrors transformer_lens's hook_z: z per layer per token.
+    model_all_z_ref = [{}]  # defined outside if block so it's always in scope
     if not hasattr(self, "_z_patched") or not self._z_patched:
         from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextAttention
-
-        # model_all_z_ref will be set to self._all_layers_z below the patch definition
-        model_all_z_ref = [{}]  # use list to allow nonlocal modification in Python 3
 
         original_forward = Qwen3VLTextAttention.forward
 
@@ -207,7 +205,7 @@ def _sample_with_vattn_and_entropy(
 
         # Collect all layers' z for DLA trace (mirrors transformer_lens hook_z)
         # The patch writes to self._all_layers_z (via model_all_z_ref[0] closure)
-        num_layers = self.config.num_hidden_layers
+        num_layers = self.model.language_model.config.num_hidden_layers
         all_z_list = []
         for layer_idx in range(num_layers):
             z = self._all_layers_z.get(layer_idx)
@@ -228,7 +226,7 @@ def _sample_with_vattn_and_entropy(
                 max_shape = non_none[0].shape
                 padded = [z if z is not None else torch.zeros(max_shape, device=next_token_logits.device) for z in all_z_list]
                 all_z = torch.stack(padded, dim=0)
-                self.gen_zs.append(all_z.cpu())
+                self.gen_zs.append(all_z)  # keep on NPU during generation
             else:
                 self.gen_zs.append(None)
         else:
@@ -248,6 +246,8 @@ def _sample_with_vattn_and_entropy(
 
                 # Get top-k candidates by logit score
                 _, top_indices = torch.topk(next_token_scores, k=min(top_k_vocab, next_token_scores.shape[-1]))
+                # top_indices shape: (batch, k) → take the batch=0 row
+                top_indices = top_indices[0]  # (k,)
 
                 # all_zs for the current token (just collected above)
                 all_zs_current = self.gen_zs[-1]  # (num_layers, batch, seq, heads, d_head)
@@ -483,7 +483,7 @@ def compute_dla_path_for_token(all_zs, model, token_id, b=0):
 
     # 获取 W_U 目标向量 (d_model,) 或 (vocab, d_model)
     W_U = model.lm_head.weight  # (vocab, d_model)
-    if W_U.shape[0] == model.config.hidden_size:
+    if W_U.shape[0] == model.model.language_model.config.hidden_size:
         target_vector = W_U[:, token_id].detach()
     else:
         target_vector = W_U[token_id, :].detach()
@@ -506,11 +506,10 @@ def compute_dla_path_for_token(all_zs, model, token_id, b=0):
         path[layer_idx] = {"head": max_head, "score": max_score}
 
         # 更新 target_vector: 追溯到上一层
-        # target_next = W_V @ (W_O[max_head] @ target_vector)
-        W_V = _get_layer_W_V(model, layer_idx)  # (d_model, d_head)
-        W_O_h = W_O[max_head]  # (d_head, d_model)
-        intermediate = W_O_h @ target_vector  # (d_head,)
-        target_vector = W_V @ intermediate  # (d_model,)
+        # 在 GQA 结构下 W_V 无法按 Q head 分解（z 是 Q×KV 混合输出，W_V 只作用于 KV 维度）。
+        # 改用 head_outputs 的均值来近似：取所有 head 的 W_O 输出均值作为残差传递的代理。
+        # 这样保持 d_model 维度，同时保留 max_head 的主导方向信息。
+        target_vector = head_outputs.mean(dim=0)  # (d_model,)
         # 归一化防止数值爆炸
         target_vector = target_vector / (target_vector.norm() + 1e-6)
 
@@ -522,21 +521,12 @@ def _get_layer_W_O(model, layer_idx):
     try:
         layer = model.model.language_model.layers[layer_idx]
         W_O = layer.self_attn.o_proj.weight  # (d_model, d_model)
-        n_heads = model.config.num_attention_heads
+        n_heads = model.model.language_model.config.num_attention_heads
         head_dim = W_O.shape[0] // n_heads
         return W_O.view(n_heads, head_dim, -1)  # (n_heads, d_head, d_model)
     except Exception:
         return None
 
-
-def _get_layer_W_V(model, layer_idx):
-    """获取指定层的 W_V 权重 (d_model, d_head)。"""
-    try:
-        layer = model.model.language_model.layers[layer_idx]
-        W_V = layer.self_attn.v_proj.weight  # (d_model, d_head)
-        return W_V
-    except Exception:
-        return None
 
 
 def verify_attention_focus_on_path(attentions, head_path, critical_indices, b=0, top_k_attn=5):

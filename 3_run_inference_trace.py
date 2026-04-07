@@ -1,16 +1,3 @@
-"""
-HEVA-Enhanced Attention-Guided Generation for Qwen3-VL
-
-Run with:
-    python 3_run_inference_trace.py --exp_name exp001 --dataset VisuRiddles --num_samples 50
-    python 3_run_inference_trace.py --exp_name exp002 --dataset RAVEN --use_context_aware true
-
-Supports:
-- Qwen3-VL-2B-Instruct
-- Qwen3-VL-2B-Thinking
-- Large-scale dataset inference
-"""
-
 import argparse
 import json
 import os
@@ -40,6 +27,7 @@ Qwen3VLForConditionalGeneration._sample = _sample_with_vattn_and_entropy
 # Utility Functions
 # ==========================================
 
+
 def log_print(*args, **kwargs):
     """Print with immediate flush."""
     kwargs.setdefault("flush", True)
@@ -50,6 +38,7 @@ def set_seed(seed: int):
     """Set global random seed for reproducibility."""
     import random
     import numpy as np
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -87,10 +76,7 @@ def build_prompt(sample: Dict[str, Any], processor, prompt_template: str = None)
     if prompt_template is None:
         prompt_template = '{question}{options}Think carefully and write the answer into a JSON form\n```json\n{{"answer": "X"}}```'
 
-    full_question = prompt_template.format(
-        question=sample["question"],
-        options=option_str
-    )
+    full_question = prompt_template.format(question=sample["question"], options=option_str)
 
     messages = [
         {"role": "system", "content": [{"type": "text", "text": "You are a helpful assistant."}]},
@@ -108,6 +94,7 @@ def build_prompt(sample: Dict[str, Any], processor, prompt_template: str = None)
 # ==========================================
 # Module 1: Critical Context Detection
 # ==========================================
+
 
 def get_critical_context_indices(
     model: Qwen3VLForConditionalGeneration,
@@ -143,11 +130,13 @@ def get_critical_context_indices(
 
     for idx, t_id in enumerate(tokens):
         t_str = processor.tokenizer.decode(t_id)
-        if any(char.isdigit() for char in t_str) or t_str.strip() in ['+', '-', '*', '/', '=', '×', '÷']:
+        if any(char.isdigit() for char in t_str) or t_str.strip() in ["+", "-", "*", "/", "=", "×", "÷"]:
             if idx not in critical_indices:
                 critical_indices.append(idx)
 
-    log_print(f"[Context] Critical indices ({len(critical_indices)}): visual=[{v_start}, {v_end}], text_nums={len(critical_indices) - max(0, v_end - v_start + 1)}")
+    log_print(
+        f"[Context] Critical indices ({len(critical_indices)}): visual=[{v_start}, {v_end}], text_nums={len(critical_indices) - max(0, v_end - v_start + 1)}"
+    )
     return sorted(critical_indices)
 
 
@@ -169,7 +158,7 @@ def _get_critical_context_indices_from_ids(
     critical_indices = []
     for idx, t_id in enumerate(input_ids):
         t_str = processor.tokenizer.decode(t_id)
-        if any(char.isdigit() for char in t_str) or t_str.strip() in ['+', '-', '*', '/', '=', '×', '÷', ',', '.']:
+        if any(char.isdigit() for char in t_str) or t_str.strip() in ["+", "-", "*", "/", "=", "×", "÷", ",", "."]:
             critical_indices.append(idx)
     return critical_indices
 
@@ -177,6 +166,7 @@ def _get_critical_context_indices_from_ids(
 # ==========================================
 # Module 2: DLA Causal Path Computation
 # ==========================================
+
 
 def compute_head_path_simple(
     model: Qwen3VLForConditionalGeneration,
@@ -214,18 +204,19 @@ def compute_head_path_simple(
     z = last_z[0, -1, :, :]
     W_O_reshaped = W_O.view(d_model, n_heads, head_dim)
 
-    head_outputs = torch.einsum('hd,mhd->hm', z, W_O_reshaped)
+    head_outputs = torch.einsum("hd,mhd->hm", z, W_O_reshaped)
     head_contributions = head_outputs @ W_U_target
 
     max_head_idx = torch.argmax(head_contributions).item()
     max_score = head_contributions[max_head_idx].item()
 
-    return {model.cfg.n_layers - 1: {"head": max_head_idx, "score": max_score}}
+    return {model.model.language_model.config.num_hidden_layers - 1: {"head": max_head_idx, "score": max_score}}
 
 
 # ==========================================
 # Module 3: Path Verification
 # ==========================================
+
 
 def verify_attention_focus(
     attention_weights: torch.Tensor,
@@ -275,6 +266,7 @@ def verify_attention_focus(
 # Module 4: Attention-Guided Token Selection
 # ==========================================
 
+
 def attention_guided_token_selection(
     model: Qwen3VLForConditionalGeneration,
     last_z: torch.Tensor,
@@ -307,7 +299,7 @@ def attention_guided_token_selection(
         last_layer = model.model.language_model.layers[-1]
         W_O = last_layer.self_attn.o_proj.weight
         d_model = W_O.shape[0]
-        n_heads = model.config.num_attention_heads
+        n_heads = model.model.language_model.config.num_attention_heads
         head_dim = d_model // n_heads
     except Exception:
         return token_ids.tolist()
@@ -339,6 +331,7 @@ def attention_guided_token_selection(
 # ==========================================
 # Module 5: Inference with Attention Capture
 # ==========================================
+
 
 def generate_with_attention_guidance(
     model: Qwen3VLForConditionalGeneration,
@@ -486,6 +479,7 @@ def generate_with_attention_guidance(
 # Module 6: Batch Inference Runner
 # ==========================================
 
+
 def run_inference(
     model_path: str,
     dataset_name: str,
@@ -550,6 +544,7 @@ def run_inference(
 
     if shuffle:
         import random
+
         random.seed(seed)
         sample_indices = sample_indices.copy()
         random.shuffle(sample_indices)
@@ -615,28 +610,37 @@ def run_inference(
             with open(meta_path, "w", encoding="utf-8") as f:
                 json.dump(meta, f, ensure_ascii=False, indent=2)
 
-            results.append({
-                "idx": idx,
-                "sample_id": sample_id,
-                "meta_path": meta_path,
-            })
+            results.append(
+                {
+                    "idx": idx,
+                    "sample_id": sample_id,
+                    "meta_path": meta_path,
+                }
+            )
 
-            log_print(f"[{sample_id}] pred={result['predicted_answer']} | gt={sample.get('answer', '')} | correct={result['correct']} | vattn={avg_vattn:.3f}")
+            log_print(
+                f"[{sample_id}] pred={result['predicted_answer']} | gt={sample.get('answer', '')} | correct={result['correct']} | vattn={avg_vattn:.3f}"
+            )
 
         except Exception as e:
             errors.append({"idx": idx, "error": str(e)})
             log_print(f"Error at idx {idx}: {e}")
             import traceback
+
             traceback.print_exc()
 
     index_path = os.path.join(output_dir, "index.json")
     with open(index_path, "w") as f:
-        json.dump({
-            "num_samples": len(results),
-            "num_errors": len(errors),
-            "results": results,
-            "errors": errors,
-        }, f, indent=2)
+        json.dump(
+            {
+                "num_samples": len(results),
+                "num_errors": len(errors),
+                "results": results,
+                "errors": errors,
+            },
+            f,
+            indent=2,
+        )
 
     log_print(f"\nCompleted: {len(results)} results, {len(errors)} errors")
     log_print(f"Output: {output_dir}")
@@ -648,6 +652,7 @@ def run_inference(
 # Entry Point
 # ==========================================
 
+
 def main():
     from data.loader import SUPPORTED_DATASETS
 
@@ -656,18 +661,20 @@ def main():
     # Experiment
     parser.add_argument("--exp_name", type=str, default="trace_exp", help="Experiment name")
     parser.add_argument("--dataset", type=str, default="VisuRiddles", choices=SUPPORTED_DATASETS, help="Dataset name")
-    parser.add_argument("--num_samples", type=int, default=10, help="Number of samples (-1 for all)")
+    parser.add_argument("--num_samples", type=int, default=100, help="Number of samples (-1 for all)")
     parser.add_argument("--shuffle", type=str, default="false", choices=["true", "false"])
     parser.add_argument("--seed", type=int, default=42)
 
     # Model
-    parser.add_argument("--model_path", type=str, default="/home/ma-user/work/Downloads/Models/Qwen/Qwen3-VL-2B-Instruct", help="Model path")
+    parser.add_argument(
+        "--model_path", type=str, default="/home/ma-user/work/Downloads/Models/Qwen/Qwen3-VL-2B-Instruct", help="Model path"
+    )
 
     # Generation
     parser.add_argument("--max_new_tokens", type=int, default=8192)
-    parser.add_argument("--temperature", type=float, default=0.7)
-    parser.add_argument("--top_p", type=float, default=0.9)
-    parser.add_argument("--top_k", type=int, default=50)
+    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--top_p", type=float, default=1.0)
+    parser.add_argument("--top_k", type=int, default=40)
     parser.add_argument("--do_sample", type=str, default="true", choices=["true", "false"])
 
     # Context-Aware Decoding
