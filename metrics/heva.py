@@ -109,10 +109,14 @@ def _sample_with_vattn_and_entropy(
     unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=input_ids.device)
     model_kwargs = self._get_initial_cache_position(cur_len, input_ids.device, model_kwargs)
 
-    # Monkey-patch last layer's attention to capture z (before reshape)
-    # Only patch once per model instance
+    # Monkey-patch attention to capture z (before reshape) for ALL layers.
+    # The patch captures model_all_z_ref which is set to self._all_layers_z below.
+    # This mirrors transformer_lens's hook_z: z per layer per token.
     if not hasattr(self, "_z_patched") or not self._z_patched:
         from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextAttention
+
+        # model_all_z_ref will be set to self._all_layers_z below the patch definition
+        model_all_z_ref = [{}]  # use list to allow nonlocal modification in Python 3
 
         original_forward = Qwen3VLTextAttention.forward
 
@@ -138,8 +142,9 @@ def _sample_with_vattn_and_entropy(
                 scaling=self.scaling, **kwargs
             )
 
-            # Capture z before reshape (shape: batch, seq, heads, d_head)
-            self._last_z = attn_output.clone()
+            # Capture z before reshape: (batch, seq, heads, d_head)
+            # model_all_z_ref[0] is the model's _all_layers_z dict
+            model_all_z_ref[0][self.layer_idx] = attn_output.clone()
 
             attn_output = attn_output.reshape(*input_shape, -1).contiguous()
             attn_output = self.o_proj(attn_output)
@@ -147,6 +152,11 @@ def _sample_with_vattn_and_entropy(
 
         Qwen3VLTextAttention.forward = patched_forward
         self._z_patched = True
+
+    # _all_layers_z: dict mapping layer_idx -> z tensor (batch, seq, heads, d_head)
+    # The patch writes to this via model_all_z_ref[0] closure
+    self._all_layers_z = {}
+    model_all_z_ref[0] = self._all_layers_z
 
     model_forward = self.__call__
     compile_forward = self._valid_auto_compile_criteria(model_kwargs, generation_config)
@@ -195,8 +205,80 @@ def _sample_with_vattn_and_entropy(
         # Cache attentions for ContextAwareLogitsProcessor (reads model._last_attentions)
         self._last_attentions = outputs.attentions
 
+        # Collect all layers' z for DLA trace (mirrors transformer_lens hook_z)
+        # The patch writes to self._all_layers_z (via model_all_z_ref[0] closure)
+        num_layers = self.config.num_hidden_layers
+        all_z_list = []
+        for layer_idx in range(num_layers):
+            z = self._all_layers_z.get(layer_idx)
+            if z is not None:
+                all_z_list.append(z)
+            else:
+                # Should not happen in normal flow; pad with zeros using first available
+                first_z = next((v for v in self._all_layers_z.values()), None)
+                if first_z is not None:
+                    all_z_list.append(torch.zeros_like(first_z))
+                else:
+                    all_z_list.append(None)
+
+        if any(z is not None for z in all_z_list):
+            # Stack (num_layers, batch, seq, heads, d_head)
+            non_none = [z for z in all_z_list if z is not None]
+            if non_none:
+                max_shape = non_none[0].shape
+                padded = [z if z is not None else torch.zeros(max_shape, device=next_token_logits.device) for z in all_z_list]
+                all_z = torch.stack(padded, dim=0)
+                self.gen_zs.append(all_z.cpu())
+            else:
+                self.gen_zs.append(None)
+        else:
+            self.gen_zs.append(None)
+
         # pre-process distribution
         next_token_scores = logits_processor(input_ids, next_token_logits)
+
+        # [NEW] Attention-guided token selection via DLA trace
+        # Mirrors the reference code: compute backward causal path for each candidate,
+        # verify if its attention focuses on critical_indices, then resample from survivors.
+        if getattr(self, 'use_attention_guidance', False) and self.gen_zs and len(self.gen_zs) > 0:
+            critical_indices = getattr(self, 'critical_indices', [])
+            if critical_indices and len(critical_indices) > 0:
+                top_k_vocab = getattr(self, 'attn_guidance_top_k', 10)
+                top_k_attn = getattr(self, 'attn_guidance_topk_attn', 5)
+
+                # Get top-k candidates by logit score
+                _, top_indices = torch.topk(next_token_scores, k=min(top_k_vocab, next_token_scores.shape[-1]))
+
+                # all_zs for the current token (just collected above)
+                all_zs_current = self.gen_zs[-1]  # (num_layers, batch, seq, heads, d_head)
+
+                valid_candidates = []
+                valid_logits = []
+
+                for i in range(len(top_indices)):
+                    tok_id = top_indices[i].item()
+                    b = 0  # batch index
+                    path, _ = compute_dla_path_for_token(all_zs_current, self, tok_id, b=b)
+                    is_valid = verify_attention_focus_on_path(
+                        outputs.attentions, path, critical_indices, b=b, top_k_attn=top_k_attn
+                    )
+                    if is_valid:
+                        valid_candidates.append(tok_id)
+                        valid_logits.append(next_token_scores[0, tok_id].item())
+
+                if valid_candidates:
+                    # Re-normalize over surviving candidates (like reference code)
+                    valid_logits_tensor = torch.tensor(valid_logits, device=next_token_scores.device)
+                    normalized_probs = F.softmax(valid_logits_tensor, dim=-1)
+                    next_tokens = torch.multinomial(normalized_probs, num_samples=1).squeeze(1)
+                    # Bypass standard sampling below
+                    has_attn_guidance_override = True
+                else:
+                    has_attn_guidance_override = False
+            else:
+                has_attn_guidance_override = False
+        else:
+            has_attn_guidance_override = False
 
         gen_entropy = get_entropy(next_token_logits)
         gen_vattn = get_vattn(outputs.attentions, visual_token_indices=self.visual_token_indices)
@@ -224,7 +306,9 @@ def _sample_with_vattn_and_entropy(
                 decoder_hidden_states += (outputs.decoder_hidden_states,) if self.config.is_encoder_decoder else (outputs.hidden_states,)
 
         # token selection
-        if do_sample:
+        if has_attn_guidance_override:
+            pass  # next_tokens already set in attention-guided block above
+        elif do_sample:
             probs = nn.functional.softmax(next_token_scores, dim=-1)
             # TODO (joao): this OP throws "skipping cudagraphs due to ['incompatible ops']", find solution
             next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
@@ -247,6 +331,9 @@ def _sample_with_vattn_and_entropy(
         # This is needed to properly delete outputs.logits which may be very large for first iteration
         # Otherwise a reference to outputs is kept which keeps the logits alive in the next iteration
         del outputs
+
+        # Clear _all_layers_z for the next generation step (z was already collected into gen_zs)
+        self._all_layers_z.clear()
 
     if streamer is not None:
         streamer.end()
@@ -358,3 +445,138 @@ def get_attn_acc(attentions, visual_token_indices, inputs_token_indices, topk):
         attn_acc_input_list.append(topk_is_input.sum().item() / topk)
 
     return torch.tensor(attn_acc_input_list), torch.tensor(attn_acc_visual_list)
+
+
+def compute_dla_path_for_token(all_zs, model, token_id, b=0):
+    """
+    计算目标 token 的 DLA 因果路径（从后往前逐层反向溯源）。
+
+    等价于 transformer_lens 的 get_backward_causal_path_for_token：
+    对每个生成 token，从 W_U[token_id] 开始，通过 z[layer] @ W_O[layer] @ W_V[layer]
+    逐层反向计算哪个 head 贡献最大。
+
+    Args:
+        all_zs: list of (num_layers, batch, seq, heads, d_head), one per generated token
+                或单个 tensor (num_layers, batch, seq, heads, d_head)
+        model: Qwen3VLForConditionalGeneration
+        token_id: 目标 token 的 ID
+        b: batch index (默认 0)
+
+    Returns:
+        Dict[int, Dict]: layer_idx -> {"head": head_idx, "score": contribution_score}
+        以及 (num_layers, batch, heads, d_head) 的所有层 z 堆叠
+    """
+    # all_zs: list of tensors or single tensor
+    if isinstance(all_zs, list):
+        if not all_zs:
+            return {}, None
+        # 取最后一个 token 的 z（当前生成位置）
+        all_zs = torch.stack(all_zs, dim=1)  # (num_layers, gen_tokens, batch, seq, heads, d_head)
+        # 只取最后一个 token 的 z
+        last_zs = all_zs[:, -1, b, -1, :, :]  # (num_layers, heads, d_head)
+    else:
+        last_zs = all_zs[:, b, -1, :, :]  # (num_layers, heads, d_head)
+
+    num_layers = last_zs.shape[0]
+    n_heads = last_zs.shape[1]
+    head_dim = last_zs.shape[2]
+
+    # 获取 W_U 目标向量 (d_model,) 或 (vocab, d_model)
+    W_U = model.lm_head.weight  # (vocab, d_model)
+    if W_U.shape[0] == model.config.hidden_size:
+        target_vector = W_U[:, token_id].detach()
+    else:
+        target_vector = W_U[token_id, :].detach()
+
+    path = {}
+
+    # 从后往前（从最后一层到第一层）
+    for layer_idx in reversed(range(num_layers)):
+        z = last_zs[layer_idx]  # (heads, d_head)
+        W_O = _get_layer_W_O(model, layer_idx)  # (heads, d_head, d_model)
+
+        # head_outputs = z @ W_O: (heads, d_model)
+        head_outputs = torch.einsum('hd,hdm->hm', z, W_O)
+        # head_contributions = head_outputs @ target_vector: (heads,)
+        head_contributions = head_outputs @ target_vector
+
+        max_head = torch.argmax(head_contributions).item()
+        max_score = head_contributions[max_head].item()
+
+        path[layer_idx] = {"head": max_head, "score": max_score}
+
+        # 更新 target_vector: 追溯到上一层
+        # target_next = W_V @ (W_O[max_head] @ target_vector)
+        W_V = _get_layer_W_V(model, layer_idx)  # (d_model, d_head)
+        W_O_h = W_O[max_head]  # (d_head, d_model)
+        intermediate = W_O_h @ target_vector  # (d_head,)
+        target_vector = W_V @ intermediate  # (d_model,)
+        # 归一化防止数值爆炸
+        target_vector = target_vector / (target_vector.norm() + 1e-6)
+
+    return {k: path[k] for k in sorted(path.keys())}, last_zs
+
+
+def _get_layer_W_O(model, layer_idx):
+    """获取指定层的 W_O 权重 (heads, d_head, d_model)。"""
+    try:
+        layer = model.model.language_model.layers[layer_idx]
+        W_O = layer.self_attn.o_proj.weight  # (d_model, d_model)
+        n_heads = model.config.num_attention_heads
+        head_dim = W_O.shape[0] // n_heads
+        return W_O.view(n_heads, head_dim, -1)  # (n_heads, d_head, d_model)
+    except Exception:
+        return None
+
+
+def _get_layer_W_V(model, layer_idx):
+    """获取指定层的 W_V 权重 (d_model, d_head)。"""
+    try:
+        layer = model.model.language_model.layers[layer_idx]
+        W_V = layer.self_attn.v_proj.weight  # (d_model, d_head)
+        return W_V
+    except Exception:
+        return None
+
+
+def verify_attention_focus_on_path(attentions, head_path, critical_indices, b=0, top_k_attn=5):
+    """
+    检查 head_path 中各层的 head 是否将注意力聚焦在 critical_indices 上。
+
+    等价于 transformer_lens 的 verify_attention_focus。
+
+    Args:
+        attentions: attention tuple, attentions[-1] = (batch, heads, seq, seq)
+        head_path: Dict[layer_idx, {"head": head_idx, "score": ...}]
+        critical_indices: List[int] of token indices that are "critical" (e.g., numbers, operators)
+        b: batch index
+        top_k_attn: 取每个 head 的 top-k 注意力位置来检查
+
+    Returns:
+        bool: 如果 >= 30% 的层关注了 critical_indices 则返回 True
+    """
+    if not critical_indices or head_path is None:
+        return False
+
+    # attentions[-1]: (batch, heads, query_len, key_len)
+    attn = attentions[-1][b]  # (heads, query, key)
+    # 取最后一个 query（当前生成 token）的注意力
+    attn_last = attn[:, -1, :]  # (heads, key_len)
+
+    seq_len = attn_last.shape[-1]
+    hit_count = 0
+    total = len(head_path)
+
+    for layer_idx, info in head_path.items():
+        head = info["head"]
+        attn_pattern = attn_last[head]  # (key_len,)
+
+        k = min(top_k_attn, seq_len)
+        _, top_indices = torch.topk(attn_pattern, k=k)
+        top_list = top_indices.tolist()
+
+        if any(idx in top_list for idx in critical_indices):
+            hit_count += 1
+
+    ratio = hit_count / total if total > 0 else 0
+    return ratio >= 0.3

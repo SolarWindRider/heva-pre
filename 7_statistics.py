@@ -1957,20 +1957,22 @@ def analyze_high_entropy_tokens_detail(exp_dir, top_percent=0.2, sample_id=None,
                             char_start = 0
                             try:
                                 # 将token位置映射到字符位置（近似）
-                                prefix_tokens = tokens[max(0, idx-2):idx]
-                                suffix_tokens = tokens[idx+1:min(idx+3, len(tokens))]
+                                prefix_tokens = tokens[max(0, idx - 2) : idx]
+                                suffix_tokens = tokens[idx + 1 : min(idx + 3, len(tokens))]
                                 prefix_text = tokenizer.decode(prefix_tokens)
                                 suffix_text = tokenizer.decode(suffix_tokens)
                                 current_text = tokenizer.decode([tokens[idx]])
 
-                                detail["high_entropy_tokens"].append({
-                                    "token_idx": int(idx),
-                                    "relative_pos": float(idx / len(entropy)),
-                                    "entropy": float(entropy[idx]),
-                                    "text": token_text,
-                                    "prefix": prefix_text,
-                                    "suffix": suffix_text,
-                                })
+                                detail["high_entropy_tokens"].append(
+                                    {
+                                        "token_idx": int(idx),
+                                        "relative_pos": float(idx / len(entropy)),
+                                        "entropy": float(entropy[idx]),
+                                        "text": token_text,
+                                        "prefix": prefix_text,
+                                        "suffix": suffix_text,
+                                    }
+                                )
                             except:
                                 pass
 
@@ -1994,13 +1996,14 @@ def analyze_high_entropy_tokens_detail(exp_dir, top_percent=0.2, sample_id=None,
     bins = [0, 0.2, 0.4, 0.6, 0.8, 1.0]
     labels = ["0-20%", "20-40%", "40-60%", "60-80%", "80-100%"]
     print(f"\n   位置区间分布:")
-    for i in range(len(bins)-1):
-        mask = (all_high_token_positions >= bins[i]) & (all_high_token_positions < bins[i+1])
+    for i in range(len(bins) - 1):
+        mask = (all_high_token_positions >= bins[i]) & (all_high_token_positions < bins[i + 1])
         pct = mask.sum() / len(all_high_token_positions) * 100
         print(f"   {labels[i]}: {pct:.1f}%")
 
     # 高频token统计
     from collections import Counter
+
     token_counts = Counter(all_high_token_texts)
     print(f"\n3. 最常见的高熵Token (top 30):")
     for text, count in token_counts.most_common(30):
@@ -2020,13 +2023,13 @@ def analyze_high_entropy_tokens_detail(exp_dir, top_percent=0.2, sample_id=None,
     for text in all_high_token_texts:
         if text in tokenizer.all_special_tokens or text in ["<|endoftext|>", "<|pad|>", "<|image_pad|>", "<|video_pad|>"]:
             special_tokens.append(text)
-        elif re.search(r'[\u4e00-\u9fff]', text):
+        elif re.search(r"[\u4e00-\u9fff]", text):
             chinese_chars.append(text)
-        elif re.match(r'^[a-zA-Z]+$', text):
+        elif re.match(r"^[a-zA-Z]+$", text):
             english_words.append(text)
-        elif re.match(r'^[\.,;:!?。，；：！？、]', text):
+        elif re.match(r"^[\.,;:!?。，；：！？、]", text):
             punctuation.append(text)
-        elif re.match(r'^\d+$', text):
+        elif re.match(r"^\d+$", text):
             numbers.append(text)
         else:
             other.append(text)
@@ -2265,6 +2268,7 @@ def compare_experiments(exp1_dir: str, exp2_dir: str, exp1_name: str = "exp001",
 
 
 if __name__ == "__main__":
+    calculate_acc("./results/exp021")
     # compare_experiments(
     #     "./results/exp002",
     #     "./results/exp011",
@@ -2276,4 +2280,3 @@ if __name__ == "__main__":
     # 高熵token详细分析
     expdir = "./results/exp021"
     analyze_high_entropy_tokens_detail(expdir, top_percent=0.2, num_samples=10)
-

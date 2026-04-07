@@ -151,6 +151,29 @@ def get_critical_context_indices(
     return sorted(critical_indices)
 
 
+def _get_critical_context_indices_from_ids(
+    input_ids: torch.Tensor,
+    processor: AutoProcessor,
+) -> List[int]:
+    """
+    Find indices of numerical and operator tokens in input_ids.
+    Mirrors the reference code's get_critical_context_indices logic.
+
+    Args:
+        input_ids: 1D tensor of token IDs
+        processor: AutoProcessor
+
+    Returns:
+        List of token indices that contain digits or operators
+    """
+    critical_indices = []
+    for idx, t_id in enumerate(input_ids):
+        t_str = processor.tokenizer.decode(t_id)
+        if any(char.isdigit() for char in t_str) or t_str.strip() in ['+', '-', '*', '/', '=', '×', '÷', ',', '.']:
+            critical_indices.append(idx)
+    return critical_indices
+
+
 # ==========================================
 # Module 2: DLA Causal Path Computation
 # ==========================================
@@ -376,6 +399,24 @@ def generate_with_attention_guidance(
     model.gen_vattn = []
     model.attn_acc_input = []
     model.attn_acc_visual = []
+    model.gen_zs = []  # per-layer z for DLA trace (num_layers, batch, seq, heads, d_head)
+
+    # [NEW] Attention-guided generation: set critical context indices and guidance flag on model
+    # Critical indices = visual token indices (image patches) in the prompt
+    # This mirrors the HEVA focus: which tokens attend to visual context?
+    if use_attention_guidance:
+        # visual_token_indices is already computed above: (start, end) tensor
+        v_start = visual_token_indices[0].item()
+        v_end = visual_token_indices[1].item()
+        critical_indices = list(range(v_start, v_end + 1))
+        model.critical_indices = critical_indices
+        model.use_attention_guidance = True
+        model.attn_guidance_top_k = top_k
+        model.attn_guidance_topk_attn = 5
+        log_print(f"[Attention Guidance] Critical indices: visual=[{v_start}, {v_end}], total={len(critical_indices)}")
+    else:
+        model.use_attention_guidance = False
+        model.critical_indices = []
 
     logits_processor = None
     if use_context_aware:
@@ -414,8 +455,9 @@ def generate_with_attention_guidance(
         gen_vattn = torch.stack(model.gen_vattn, dim=1).cpu()
         attn_acc_input = torch.stack(model.attn_acc_input, dim=1).cpu()
         attn_acc_visual = torch.stack(model.attn_acc_visual, dim=1).cpu()
+        gen_zs = [z.cpu() for z in model.gen_zs if z is not None]
     else:
-        gen_entropy = gen_vattn = attn_acc_input = attn_acc_visual = None
+        gen_entropy = gen_vattn = attn_acc_input = attn_acc_visual = gen_zs = None
 
     generated_text = processor.decode(outputs.sequences[0][prompt_token_num:])
 
@@ -435,6 +477,7 @@ def generate_with_attention_guidance(
         "gen_vattn": gen_vattn,
         "attn_acc_input": attn_acc_input,
         "attn_acc_visual": attn_acc_visual,
+        "gen_zs": gen_zs,  # list of (num_layers, batch, seq, heads, d_head) per token
         "sequences": outputs.sequences,
     }
 
@@ -537,6 +580,7 @@ def run_inference(
             sample_id = str(sample.get("id", idx)).replace("/", "_").replace("\\", "_").replace(":", "_")
             gen_entropy_path = os.path.join(output_dir, "pkls", f"{idx}_gen_entropy.pkl")
             gen_vattn_path = os.path.join(output_dir, "pkls", f"{idx}_gen_vattn.pkl")
+            gen_zs_path = os.path.join(output_dir, "pkls", f"{idx}_gen_zs.pkl")
 
             if result["gen_entropy"] is not None:
                 with open(gen_entropy_path, "wb") as f:
@@ -544,6 +588,9 @@ def run_inference(
             if result["gen_vattn"] is not None:
                 with open(gen_vattn_path, "wb") as f:
                     pickle.dump(result["gen_vattn"], f)
+            if result["gen_zs"] is not None:
+                with open(gen_zs_path, "wb") as f:
+                    pickle.dump(result["gen_zs"], f)
 
             avg_vattn = result["gen_vattn"].mean().item() if result["gen_vattn"] is not None else 0.0
 
@@ -559,6 +606,7 @@ def run_inference(
                 "avg_vattn": avg_vattn,
                 "gen_entropy_path": gen_entropy_path,
                 "gen_vattn_path": gen_vattn_path,
+                "gen_zs_path": gen_zs_path,
                 "use_context_aware": use_context_aware,
                 "use_attention_guidance": use_attention_guidance,
             }
