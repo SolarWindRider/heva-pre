@@ -1845,6 +1845,247 @@ def analyze_answer_proportion(exp_dir):
     return results
 
 
+def analyze_high_entropy_tokens_detail(exp_dir, top_percent=0.2, sample_id=None, num_samples=10):
+    """
+    分析高熵token的详细信息，包括：
+    1. 高熵token在文本中的具体位置（字符级别）
+    2. 高熵token对应的词或字符
+    3. 高熵token周围的上下文
+    4. 统计高频出现的高熵token类型
+
+    Args:
+        exp_dir: 实验路径，如 ./results/exp001
+        top_percent: 高熵token比例，默认20%
+        sample_id: 若指定，则只分析该sample_id的样本；否则分析所有样本
+        num_samples: 详细展示的样本数量（当sample_id=None时生效）
+    """
+    from transformers import AutoTokenizer
+    import pickle
+    import re
+
+    # 加载分词器
+    try:
+        tokenizer = AutoTokenizer.from_pretrained("../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking", trust_remote_code=True)
+    except:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct", trust_remote_code=True)
+        except:
+            print("Warning: Cannot load tokenizer, skipping detail analysis")
+            return
+
+    exp_path = Path(exp_dir)
+
+    print(f"\n{'='*60}")
+    print(f"高熵Token详细分析 (top {top_percent*100:.0f}%)")
+    print(f"{'='*60}")
+
+    # 收集所有高熵token的统计信息
+    all_high_token_ids = []
+    all_high_token_texts = []
+    all_high_token_positions = []  # 相对位置
+    all_high_entropy_values = []
+    sample_details = []
+
+    for bench_dir in sorted(exp_path.iterdir()):
+        if not bench_dir.is_dir():
+            continue
+
+        bench_name = bench_dir.name
+
+        for json_file in bench_dir.glob("*_meta.json"):
+            try:
+                with open(json_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                generated_text = data.get("generated_text", "")
+                if not generated_text:
+                    continue
+
+                entropy_path = data.get("gen_entropy_path")
+                if not entropy_path:
+                    continue
+
+                entropy_path = Path(entropy_path)
+                if not entropy_path.exists():
+                    continue
+
+                # 加载熵值
+                with open(entropy_path, "rb") as f:
+                    entropy = pickle.load(f)
+                entropy = entropy.squeeze().numpy()
+
+                # 分词
+                tokens = tokenizer.encode(generated_text, add_special_tokens=False)
+
+                min_len = min(len(entropy), len(tokens))
+                entropy = entropy[:min_len]
+                tokens = tokens[:min_len]
+
+                if len(entropy) < 50:
+                    continue
+
+                n_high = max(1, int(len(entropy) * top_percent))
+                high_entropy_indices = np.argsort(entropy)[-n_high:]
+
+                sample_id = data.get("sample_id", json_file.stem)
+
+                # 统计
+                for idx in high_entropy_indices:
+                    if idx < len(tokens):
+                        token_text = tokenizer.decode([tokens[idx]])
+                        all_high_token_ids.append(tokens[idx])
+                        all_high_token_texts.append(token_text)
+                        all_high_entropy_values.append(entropy[idx])
+                        all_high_token_positions.append(idx / len(entropy))
+
+                # 收集样本详情
+                if len(sample_details) < num_samples:
+                    detail = {
+                        "bench": bench_name,
+                        "sample_id": sample_id,
+                        "correct": data.get("correct", False),
+                        "predicted_answer": data.get("predicted_answer", ""),
+                        "ground_truth": data.get("ground_truth", ""),
+                        "total_tokens": len(tokens),
+                        "high_entropy_tokens": [],
+                    }
+
+                    for idx in high_entropy_indices:
+                        if idx < len(tokens):
+                            token_text = tokenizer.decode([tokens[idx]])
+                            # 尝试获取上下文字符串
+                            char_start = 0
+                            try:
+                                # 将token位置映射到字符位置（近似）
+                                prefix_tokens = tokens[max(0, idx-2):idx]
+                                suffix_tokens = tokens[idx+1:min(idx+3, len(tokens))]
+                                prefix_text = tokenizer.decode(prefix_tokens)
+                                suffix_text = tokenizer.decode(suffix_tokens)
+                                current_text = tokenizer.decode([tokens[idx]])
+
+                                detail["high_entropy_tokens"].append({
+                                    "token_idx": int(idx),
+                                    "relative_pos": float(idx / len(entropy)),
+                                    "entropy": float(entropy[idx]),
+                                    "text": token_text,
+                                    "prefix": prefix_text,
+                                    "suffix": suffix_text,
+                                })
+                            except:
+                                pass
+
+                    sample_details.append(detail)
+
+            except Exception as e:
+                continue
+
+    # 统计分析
+    print(f"\n1. 高熵Token整体统计:")
+    print(f"   总高熵token数: {len(all_high_token_texts)}")
+    print(f"   平均熵值: {np.mean(all_high_entropy_values):.4f}")
+    print(f"   熵值范围: [{np.min(all_high_entropy_values):.4f}, {np.max(all_high_entropy_values):.4f}]")
+
+    # 位置分布
+    all_high_token_positions = np.array(all_high_token_positions)
+    print(f"\n2. 高熵Token位置分布 (0=开头, 1=结尾):")
+    print(f"   均值: {all_high_token_positions.mean():.4f}")
+    print(f"   中位数: {np.median(all_high_token_positions):.4f}")
+
+    bins = [0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    labels = ["0-20%", "20-40%", "40-60%", "60-80%", "80-100%"]
+    print(f"\n   位置区间分布:")
+    for i in range(len(bins)-1):
+        mask = (all_high_token_positions >= bins[i]) & (all_high_token_positions < bins[i+1])
+        pct = mask.sum() / len(all_high_token_positions) * 100
+        print(f"   {labels[i]}: {pct:.1f}%")
+
+    # 高频token统计
+    from collections import Counter
+    token_counts = Counter(all_high_token_texts)
+    print(f"\n3. 最常见的高熵Token (top 30):")
+    for text, count in token_counts.most_common(30):
+        # 打印可读形式
+        readable = text.replace("\n", "\\n").replace(" ", "·")
+        print(f'   "{readable}": {count}')
+
+    # 按token类型分组
+    print(f"\n4. 高熵Token类型分析:")
+    special_tokens = []
+    chinese_chars = []
+    english_words = []
+    punctuation = []
+    numbers = []
+    other = []
+
+    for text in all_high_token_texts:
+        if text in tokenizer.all_special_tokens or text in ["<|endoftext|>", "<|pad|>", "<|image_pad|>", "<|video_pad|>"]:
+            special_tokens.append(text)
+        elif re.search(r'[\u4e00-\u9fff]', text):
+            chinese_chars.append(text)
+        elif re.match(r'^[a-zA-Z]+$', text):
+            english_words.append(text)
+        elif re.match(r'^[\.,;:!?。，；：！？、]', text):
+            punctuation.append(text)
+        elif re.match(r'^\d+$', text):
+            numbers.append(text)
+        else:
+            other.append(text)
+
+    print(f"   特殊Token: {len(special_tokens)} ({len(special_tokens)/len(all_high_token_texts)*100:.1f}%)")
+    print(f"   中文字符: {len(chinese_chars)} ({len(chinese_chars)/len(all_high_token_texts)*100:.1f}%)")
+    print(f"   英文字符: {len(english_words)} ({len(english_words)/len(all_high_token_texts)*100:.1f}%)")
+    print(f"   数字: {len(numbers)} ({len(numbers)/len(all_high_token_texts)*100:.1f}%)")
+    print(f"   标点符号: {len(punctuation)} ({len(punctuation)/len(all_high_token_texts)*100:.1f}%)")
+    print(f"   其他: {len(other)} ({len(other)/len(all_high_token_texts)*100:.1f}%)")
+
+    # 详细样本展示
+    print(f"\n{'='*60}")
+    print(f"5. 详细样本分析 (展示前{num_samples}个样本)")
+    print(f"{'='*60}")
+
+    for i, sample in enumerate(sample_details):
+        print(f"\n--- 样本 {i+1}: {sample['bench']} ---")
+        print(f"    Sample ID: {sample['sample_id']}")
+        print(f"    正确性: {'✓' if sample['correct'] else '✗'}")
+        print(f"    答案: pred={sample['predicted_answer']}, gt={sample['ground_truth']}")
+        print(f"    总Token数: {sample['total_tokens']}, 高熵Token数: {len(sample['high_entropy_tokens'])}")
+
+        print(f"\n    高熵Token详情:")
+        print(f"    {'位置':<8} {'相对位置':<10} {'熵值':<10} {'Token':<15} {'上下文'}")
+        print(f"    {'-'*80}")
+
+        for tok_info in sample["high_entropy_tokens"][:15]:  # 最多显示15个
+            pos = tok_info["token_idx"]
+            rel_pos = tok_info["relative_pos"]
+            ent = tok_info["entropy"]
+            text = tok_info["text"].replace("\n", "\\n")
+            prefix = tok_info.get("prefix", "").replace("\n", "\\n")
+            suffix = tok_info.get("suffix", "").replace("\n", "\\n")
+            context = f"[{prefix}] {text} [{suffix}]"
+            print(f"    {pos:<8} {rel_pos:<10.3f} {ent:<10.4f} {text:<15} {context}")
+
+        if len(sample["high_entropy_tokens"]) > 15:
+            print(f"    ... 还有 {len(sample['high_entropy_tokens'])-15} 个高熵token")
+
+    return {
+        "total_high_entropy_tokens": len(all_high_token_texts),
+        "mean_entropy": float(np.mean(all_high_entropy_values)),
+        "position_distribution": {
+            "mean": float(all_high_token_positions.mean()),
+            "median": float(np.median(all_high_token_positions)),
+        },
+        "token_type_counts": {
+            "special": len(special_tokens),
+            "chinese": len(chinese_chars),
+            "english": len(english_words),
+            "numbers": len(numbers),
+            "punctuation": len(punctuation),
+            "other": len(other),
+        },
+        "sample_details": sample_details,
+    }
+
+
 def compare_experiments(exp1_dir: str, exp2_dir: str, exp1_name: str = "exp001", exp2_name: str = "exp002", output_file: str = None):
     """
     对比两组实验的结果，分类统计每个样本在两组实验中的正确性变化。
@@ -2024,10 +2265,15 @@ def compare_experiments(exp1_dir: str, exp2_dir: str, exp1_name: str = "exp001",
 
 
 if __name__ == "__main__":
-    compare_experiments(
-        "./results/exp002",
-        "./results/exp011",
-        exp1_name="without vattn",
-        exp2_name="with vattn",
-        output_file="compare_exp002_vs_exp011.txt",
-    )
+    # compare_experiments(
+    #     "./results/exp002",
+    #     "./results/exp011",
+    #     exp1_name="without vattn",
+    #     exp2_name="with vattn",
+    #     output_file="compare_exp002_vs_exp011.txt",
+    # )
+
+    # 高熵token详细分析
+    expdir = "./results/exp021"
+    analyze_high_entropy_tokens_detail(expdir, top_percent=0.2, num_samples=10)
+
