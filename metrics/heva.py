@@ -252,29 +252,33 @@ def _sample_with_vattn_and_entropy(
                 # all_zs for the current token (just collected above)
                 all_zs_current = self.gen_zs[-1]  # (num_layers, batch, seq, heads, d_head)
 
-                valid_candidates = []
-                valid_logits = []
-
-                for i in range(len(top_indices)):
-                    tok_id = top_indices[i].item()
-                    b = 0  # batch index
-                    path, _ = compute_dla_path_for_token(all_zs_current, self, tok_id, b=b)
-                    is_valid = verify_attention_focus_on_path(
-                        outputs.attentions, path, critical_indices, b=b, top_k_attn=top_k_attn
-                    )
-                    if is_valid:
-                        valid_candidates.append(tok_id)
-                        valid_logits.append(next_token_scores[0, tok_id].item())
-
-                if valid_candidates:
-                    # Re-normalize over surviving candidates (like reference code)
-                    valid_logits_tensor = torch.tensor(valid_logits, device=next_token_scores.device)
-                    normalized_probs = F.softmax(valid_logits_tensor, dim=-1)
-                    next_tokens = torch.multinomial(normalized_probs, num_samples=1).squeeze(1)
-                    # Bypass standard sampling below
-                    has_attn_guidance_override = True
-                else:
+                # Guard: if gen_zs[-1] is None (stacking failed), skip DLA for this step
+                if all_zs_current is None:
                     has_attn_guidance_override = False
+                else:
+                    valid_candidates = []
+                    valid_logits = []
+
+                    for i in range(len(top_indices)):
+                        tok_id = top_indices[i].item()
+                        b = 0  # batch index
+                        path, _ = compute_dla_path_for_token(all_zs_current, self, tok_id, b=b)
+                        is_valid = verify_attention_focus_on_path(
+                            outputs.attentions, path, critical_indices, b=b, top_k_attn=top_k_attn
+                        )
+                        if is_valid:
+                            valid_candidates.append(tok_id)
+                            valid_logits.append(next_token_scores[0, tok_id].item())
+
+                    if valid_candidates:
+                        # Re-normalize over surviving candidates (like reference code)
+                        valid_logits_tensor = torch.tensor(valid_logits, device=next_token_scores.device)
+                        normalized_probs = F.softmax(valid_logits_tensor, dim=-1)
+                        next_tokens = torch.multinomial(normalized_probs, num_samples=1).squeeze(1)
+                        # Bypass standard sampling below
+                        has_attn_guidance_override = True
+                    else:
+                        has_attn_guidance_override = False
             else:
                 has_attn_guidance_override = False
         else:
