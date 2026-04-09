@@ -1566,6 +1566,7 @@ def analyze_attn_acc(exp_dir):
     return bench_results
 
 
+# 最后一层视觉注意力分布分析 (vattn分布统计)
 def analyze_vattn_distribution(exp_dir):
     """
     统计 gen_vattn.pkl 中 vattn 的四分位数分布。
@@ -1678,18 +1679,20 @@ def analyze_vattn_distribution(exp_dir):
     return bench_results
 
 
-def analyze_entropy_distribution(exp_dir):
+def analyze_entropy_distribution(exp_dir, threshold=None):
     """
     统计 gen_entropy.pkl 中熵的四分位数分布。
 
     Args:
         exp_dir: 实验路径，如 ./results/exp001
+        threshold: 若指定，则额外输出基于该阈值的划分统计（高于/低于该阈值的token比例等）
     """
     import pickle
 
     exp_path = Path(exp_dir)
 
     all_entropy = []  # 展平成一维的所有熵值
+    bench_entropy_data = {}  # bench_name -> list of entropy arrays (for threshold analysis)
 
     for bench_dir in sorted(exp_path.iterdir()):
         if not bench_dir.is_dir():
@@ -1698,6 +1701,9 @@ def analyze_entropy_distribution(exp_dir):
         pkls_dir = bench_dir / "pkls"
         if not pkls_dir.exists():
             continue
+
+        bench_name = bench_dir.name
+        entropy_list = []
 
         for json_file in bench_dir.glob("*_meta.json"):
             try:
@@ -1716,9 +1722,13 @@ def analyze_entropy_distribution(exp_dir):
                     entropy = pickle.load(f)
                     entropy = entropy.squeeze().numpy()
                     all_entropy.append(entropy.flatten())
+                    entropy_list.append(entropy.flatten())
 
             except Exception:
                 continue
+
+        if entropy_list:
+            bench_entropy_data[bench_name] = entropy_list
 
     all_entropy = np.concatenate(all_entropy)
 
@@ -1733,6 +1743,34 @@ def analyze_entropy_distribution(exp_dir):
     print(f"  Q2 (50%): {np.percentile(all_entropy, 50):.6f}")
     print(f"  Q3 (75%): {np.percentile(all_entropy, 75):.6f}")
     print(f"  最大值: {all_entropy.max():.6f}")
+
+    # threshold 划分统计
+    if threshold is not None:
+        above_mask = all_entropy > threshold
+        below_mask = all_entropy <= threshold
+        print(f"\n{'='*60}")
+        print(f"ENTROPY Threshold 划分统计 (threshold={threshold})")
+        print(f"{'='*60}")
+        print(f"  > {threshold} 的 token 数: {above_mask.sum()} ({above_mask.mean()*100:.2f}%)")
+        print(f"  <= {threshold} 的 token 数: {below_mask.sum()} ({below_mask.mean()*100:.2f}%)")
+        print(
+            f"  高于阈值 token 的平均熵: {all_entropy[above_mask].mean():.6f}" if above_mask.sum() > 0 else "  高于阈值 token 的平均熵: N/A"
+        )
+        print(
+            f"  低于阈值 token 的平均熵: {all_entropy[below_mask].mean():.6f}" if below_mask.sum() > 0 else "  低于阈值 token 的平均熵: N/A"
+        )
+
+        # 按 benchmark 分组
+        print(f"\n  各 Benchmark Threshold 划分:")
+        print(f"  {'Benchmark':<20} {'Above%':<10} {'Below%':<10} {'Above>Avg':<12} {'Below<=Avg':<12}")
+        print(f"  {'-'*64}")
+        for bench_name in sorted(bench_entropy_data.keys()):
+            bench_arr = np.concatenate(bench_entropy_data[bench_name])
+            above = (bench_arr > threshold).mean() * 100
+            below = (bench_arr <= threshold).mean() * 100
+            above_avg = bench_arr[bench_arr > threshold].mean() if (bench_arr > threshold).sum() > 0 else 0
+            below_avg = bench_arr[bench_arr <= threshold].mean() if (bench_arr <= threshold).sum() > 0 else 0
+            print(f"  {bench_name:<20} {above:<10.2f} {below:<10.2f} {above_avg:<12.6f} {below_avg:<12.6f}")
 
     # 按 bench 分组统计四分位数
     print(f"\n{'='*60}")
@@ -1790,6 +1828,7 @@ def analyze_entropy_distribution(exp_dir):
     return bench_results
 
 
+# 统计得到最终回答的样本比例
 def analyze_answer_proportion(exp_dir):
     """
     统计得到最终回答的样本比例，即 meta JSON 中 predicted_answer 不为空的样本数量 / 总样本数。
@@ -2268,7 +2307,8 @@ def compare_experiments(exp1_dir: str, exp2_dir: str, exp1_name: str = "exp001",
 
 
 if __name__ == "__main__":
-    calculate_acc("./results/exp021")
+    # calculate_acc("./results/exp003")
+    # calculate_acc("./results/exp004")
     # compare_experiments(
     #     "./results/exp002",
     #     "./results/exp011",
@@ -2277,6 +2317,11 @@ if __name__ == "__main__":
     #     output_file="compare_exp002_vs_exp011.txt",
     # )
 
-    # 高熵token详细分析
-    expdir = "./results/exp021"
-    analyze_high_entropy_tokens_detail(expdir, top_percent=0.2, num_samples=10)
+    # # 高熵token详细分析
+    # expdir = "./results/exp021"
+    # analyze_high_entropy_tokens_detail(expdir, top_percent=0.2, num_samples=10)
+    # analyze_answer_proportion("./results/exp003")
+    # analyze_answer_proportion("./results/exp004")
+    # analyze_vattn_distribution("./results/exp003")
+    # analyze_vattn_distribution("./results/exp004")
+    analyze_entropy_distribution("./results/exp002", threshold=1.5)

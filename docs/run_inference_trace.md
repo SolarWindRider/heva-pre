@@ -373,38 +373,104 @@ python 3_run_inference_trace.py \
     --ctx_entropy_threshold 5.0 --num_samples 100
 ```
 
-**每步**的采样流程：
+**每步的完整执行流程（伪代码级）**：
+
+```python
+# heva.py:236 — logits_processor 调用（CAD 介入）
+next_token_scores = logits_processor(input_ids, next_token_logits)
+#   ↓
+#   CAD_processor.__call__(input_ids, scores) 内部：
+#   ├── 计算 entropy = H(scores)  （第 250 行）
+#   ├── if entropy < threshold: 直接返回 scores，不干预
+#   └── if entropy >= threshold:
+#       ├── 取 top-k 候选 token（默认 20）
+#       ├── 计算每个候选的 context_support
+#       ├── 保留 top-k//2 高 support 的（10个），其余设为 -inf
+#       └── 返回处理后的 scores
+#
+# heva.py:241-285 — Attention Guidance 介入（每步执行，与 entropy 无关）
+if use_attention_guidance and gen_zs:
+    # 在 CAD 处理后的 scores 上取 top-10
+    _, top_indices = torch.topk(next_token_scores, k=10)
+
+    for i in range(len(top_indices)):
+        tok_id = top_indices[i]
+        # 阶段一：DLA 反向路径计算
+        path = compute_dla_path_for_token(all_zs_current, model, tok_id)
+        #   逐层反向：W_U ← z·W_O，每层选贡献最大的 head
+        #
+        # 阶段二：验证路径是否聚焦视觉 token
+        is_valid = verify_attention_focus_on_path(
+            outputs.attentions, path, critical_indices, top_k_attn=5
+        )
+        #   检查 path 中各 head 的 top-5 atten 是否命中视觉 token
+        #   命中率 >= 30% → is_valid = True
+
+        if is_valid:
+            valid_candidates.append(tok_id)
+            valid_logits.append(next_token_scores[tok_id])
+
+    if valid_candidates:
+        # 从通过验证的候选中重新归一化采样
+        probs = softmax(valid_logits)
+        next_tokens = multinomial(probs, 1)
+        has_attn_guidance_override = True
+
+# 如果 attention guidance 没有产生幸存者，回退到 top-1
+if not has_attn_guidance_override:
+    next_tokens = top_indices[0]
+```
+
+**关键执行顺序与数据依赖**：
+
+| 步骤 | 代码位置 | 输入 | 输出 | 触发条件 |
+|------|---------|------|------|---------|
+| 1. CAD 处理 | `heva.py:236` | 原始 `next_token_logits` | 部分 token 设为 `-inf` | entropy >= threshold |
+| 2. DLA 取候选 | `heva.py:248` | CAD 处理后的 scores | top-10 候选 | 始终（与 entropy 无关）|
+| 3. DLA 路径计算 | `heva.py:265` | `gen_zs[-1]`（所有层 z）| path dict | 始终 |
+| 4. 路径验证 | `heva.py:266` | `outputs.attentions` | `is_valid` bool | 始终 |
+| 5. 重新采样 | `heva.py:275-277` | valid_candidates | `next_tokens` | 存在幸存者 |
+
+**数据流图**：
 
 ```
-next_token_scores = logits_processor([CAD_processor, ...])
-        ↓
-[Step 1] CAD_processor 介入：
-    entropy > 5.0？
-        ├── 是 → 过滤为 top_k//2 幸存候选
-        └── 否 → 不干预
-        ↓
-[Step 2] DLA 验证介入（每步都做，与熵无关）：
-    取 CAD 幸存候选（基于调整后的分数）
-        ↓
-    对每个候选：两阶段验证
-        [阶段一] compute_dla_path_for_token → 找贡献最大的 head
-        [阶段二] verify_attention_focus_on_path → 验证该 head 是否 atten 到视觉 token
-        → 命中率 >= 30% → is_valid
-        ↓
-    幸存候选 → 重新归一化 → 采样
+原始 logits (vocab,)
+       │
+       ▼
+[CAD] entropy >= threshold?
+       │是                    │否
+       ▼                     ▼
+  top-k → support 排序     直接返回原始 scores
+  保留 top-k//2
+  其余设为 -inf
+       │
+       ▼
+  处理后的 scores (vocab,)
+       │
+       ▼
+[AG] torch.topk(scores, k=10)
+  → top_indices (10,)
+       │
+       ▼
+  for each tok_id in top_indices:
+       │
+       ├─→ compute_dla_path_for_token()
+       │    用 gen_zs[-1] + W_U + W_O
+       │    输出: path = {layer: {"head": h, "score": s}}
+       │
+       └─→ verify_attention_focus_on_path()
+            用 outputs.attentions（softmax 权重）
+            检查各 head 的 top-5 atten 是否命中 visual tokens
+            输出: is_valid (bool)
+       │
+       ▼
+  过滤: 只保留 is_valid=True 的候选
+       │
+       ▼
+  幸存者 → softmax → multinomial → next_token
 ```
 
-**两层过滤叠加**：
-
-```
-CAD（熵触发）  →  把 bottom half 候选设为 -inf（过滤）
-    ↓
-DLA（每步执行）→  对 CAD 幸存候选再做路径验证过滤
-    ↓
-幸存者重新归一化采样
-```
-
-**注意**：CAD 和 DLA 都是**过滤**机制，不是 boost。CAD 按 context_support 过滤， DLA 按视觉注意力路径验证过滤。
+**注意**：CAD 和 DLA 都是**过滤**机制，不是 boost。CAD 按 context_support 过滤，DLA 按视觉注意力路径验证过滤。两者顺序执行，DLA 在 CAD 的结果上继续过滤。
 
 ### 关键区别总结
 
