@@ -346,6 +346,7 @@ def generate_with_attention_guidance(
     ctx_entropy_threshold: float = 5.0,
     ctx_top_heads: int = 5,
     use_attention_guidance: bool = False,
+    dla_entropy_threshold: float = None,
     prompt_template: str = None,
 ) -> Dict[str, Any]:
     """
@@ -406,6 +407,7 @@ def generate_with_attention_guidance(
         model.use_attention_guidance = True
         model.attn_guidance_top_k = top_k
         model.attn_guidance_topk_attn = 5
+        model.dla_entropy_threshold = dla_entropy_threshold
         log_print(f"[Attention Guidance] Critical indices: visual=[{v_start}, {v_end}], total={len(critical_indices)}")
     else:
         model.use_attention_guidance = False
@@ -494,6 +496,7 @@ def run_inference(
     ctx_entropy_threshold: float = 5.0,
     ctx_top_heads: int = 5,
     use_attention_guidance: bool = False,
+    dla_entropy_threshold: float = None,
     prompt_template: str = None,
     shuffle: bool = False,
     seed: int = 42,
@@ -569,6 +572,7 @@ def run_inference(
                 ctx_entropy_threshold=ctx_entropy_threshold,
                 ctx_top_heads=ctx_top_heads,
                 use_attention_guidance=use_attention_guidance,
+                dla_entropy_threshold=dla_entropy_threshold,
                 prompt_template=prompt_template,
             )
 
@@ -604,6 +608,7 @@ def run_inference(
                 "gen_zs_path": gen_zs_path,
                 "use_context_aware": use_context_aware,
                 "use_attention_guidance": use_attention_guidance,
+                "dla_entropy_threshold": dla_entropy_threshold,
             }
 
             meta_path = os.path.join(output_dir, f"{sample_id}_meta.json")
@@ -684,6 +689,7 @@ def main():
 
     # Attention Guidance
     parser.add_argument("--use_attention_guidance", type=str, default="false", choices=["true", "false"])
+    parser.add_argument("--dla_entropy_threshold", type=float, default=None, help="DLA only applied when entropy > threshold")
 
     # Output
     parser.add_argument("--output_dir", type=str, default="results")
@@ -716,6 +722,7 @@ def main():
         "ctx_entropy_threshold": args.ctx_entropy_threshold,
         "ctx_top_heads": args.ctx_top_heads,
         "use_attention_guidance": use_attention_guidance,
+        "dla_entropy_threshold": args.dla_entropy_threshold,
         "prompt_template": args.prompt_template,
     }
     config_path = os.path.join(output_dir, "exp_config.json")
@@ -748,6 +755,7 @@ def main():
         ctx_entropy_threshold=args.ctx_entropy_threshold,
         ctx_top_heads=args.ctx_top_heads,
         use_attention_guidance=use_attention_guidance,
+        dla_entropy_threshold=args.dla_entropy_threshold,
         prompt_template=args.prompt_template,
         shuffle=shuffle,
         seed=args.seed,
