@@ -83,12 +83,11 @@ def preprocess_multimodal_dataset(bench: str) -> List[Dict]:
     """
     if bench == "VisuRiddles":
         dsjson = json.load(open(f"{DATA_ROOT}/VisuRiddles/test_dataset.json"))
-        base_image_dir = f"{DATA_ROOT}/VisuRiddles"
         ds = []
         for example in dsjson:
             ds.append(
                 {
-                    "image_path": base_image_dir + "/" + example["imgs"][0],
+                    "image_path": example["imgs"][0],
                     "question": example["question"],
                     "option": example["option"],
                     "answer": example["gold_answer"],
@@ -100,12 +99,11 @@ def preprocess_multimodal_dataset(bench: str) -> List[Dict]:
 
     elif bench == "RAVEN":
         dsjson = json.load(open(f"{DATA_ROOT}/RAVEN/raven_test.json"))
-        base_image_dir = f"{DATA_ROOT}/RAVEN"
         ds = []
         for example in dsjson:
             ds.append(
                 {
-                    "image_path": base_image_dir + "/" + example["images"][0],
+                    "image_path": example["images"][0],
                     "question": "Which one of the options is the correct answer for the question?",
                     "option": "A, B, C, D, E, F, G, H.",
                     "answer": example["messages"][1]["content"],
@@ -137,12 +135,11 @@ def preprocess_multimodal_dataset(bench: str) -> List[Dict]:
 
     elif bench == "LogicVista":
         dsjson = json.load(open(f"{DATA_ROOT}/LogicVista/data/dataset.json"))
-        base_image_dir = f"{DATA_ROOT}/LogicVista/data/images"
         ds = []
         for key in dsjson.keys():
             ds.append(
                 {
-                    "image_path": base_image_dir + "/" + dsjson[key]["imagename"],
+                    "image_path": dsjson[key]["imagename"],
                     "question": dsjson[key]["question"],
                     "option": "",  # LogicVista 原本的question里面包含options
                     "answer": dsjson[key]["answer"],
@@ -166,7 +163,7 @@ def preprocess_multimodal_dataset(bench: str) -> List[Dict]:
             example = json.loads(example)
             ds.append(
                 {
-                    "image_path": base_image_dir + "/" + example["image"],
+                    "image_path": example["image"],
                     "question": example["question"],
                     "option": str(example["options"])[1:-1] + ".",
                     "answer": example["answer"],
@@ -190,7 +187,7 @@ def preprocess_multimodal_dataset(bench: str) -> List[Dict]:
             example = json.loads(example)
             ds.append(
                 {
-                    "image_path": base_image_dir + "/" + example["image"],
+                    "image_path": example["image"],
                     "question": example["question"],
                     "option": str(example["options"])[1:-1] + ".",
                     "answer": example["answer"],
