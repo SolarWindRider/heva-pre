@@ -6,11 +6,11 @@ HEVA (High-Entropy Visual Attention) 数据加载模块
 import json
 import os
 from PIL import Image
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 
 
 # 数据集根目录
-DATA_ROOT = "/home/ma-user/work/datas"
+DATA_ROOT = "../datas"
 
 
 class AVGDataset:
@@ -30,43 +30,43 @@ class AVGDataset:
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         """
-        返回样本:
-        {
-            "id": str,
-            "image            "question":": PIL.Image,
- str,
-            "            "options":answer": str,
- str,
-        }
+               返回样本:
+               {
+                   "id": str,
+                   "image            "question":": PIL.Image,
+        str,
+                   "            "options":answer": str,
+        str,
+               }
         """
         item = self.data[idx]
 
         # 构建图像路径
-        img_path = item['image_path']
+        img_path = item["image_path"]
         if not os.path.isabs(img_path):
             img_path = os.path.join(self.image_base_path, img_path)
 
         # 加载图像
         try:
-            image = Image.open(img_path).convert('RGB')
+            image = Image.open(img_path).convert("RGB")
         except Exception as e:
             print(f"Warning: Cannot load image {img_path}: {e}")
-            image = Image.new('RGB', (448, 448), color='white')
+            image = Image.new("RGB", (448, 448), color="white")
 
         return {
-            "id": str(item.get('id', idx)),
+            "id": str(item.get("id", idx)),
             "image": image,
             "image_path": img_path,
-            "question": item['question'],
-            "answer": str(item['answer']),
-            "options": item.get('option', ''),
-            "issudoku": item.get('issudoku', False),
+            "question": item["question"],
+            "answer": str(item["answer"]),
+            "options": item.get("option", ""),
+            "issudoku": item.get("issudoku", False),
         }
 
     def get_sample_by_id(self, sample_id: str) -> Dict[str, Any]:
         """通过ID获取样本"""
         for i, item in enumerate(self.data):
-            if str(item.get('id', i)) == sample_id:
+            if str(item.get("id", i)) == sample_id:
                 return self[i]
         raise ValueError(f"Sample with id {sample_id} not found")
 
@@ -86,14 +86,16 @@ def preprocess_multimodal_dataset(bench: str) -> List[Dict]:
         base_image_dir = f"{DATA_ROOT}/VisuRiddles"
         ds = []
         for example in dsjson:
-            ds.append({
-                "image_path": base_image_dir + "/" + example["imgs"][0],
-                "question": example["question"],
-                "option": example["option"],
-                "answer": example["gold_answer"],
-                "id": example["id"],
-                "issudoku": True if "sudoku" in example.get("class", "") else False,
-            })
+            ds.append(
+                {
+                    "image_path": base_image_dir + "/" + example["imgs"][0],
+                    "question": example["question"],
+                    "option": example["option"],
+                    "answer": example["gold_answer"],
+                    "id": example["id"],
+                    "issudoku": True if "sudoku" in example.get("class", "") else False,
+                }
+            )
         return ds
 
     elif bench == "RAVEN":
@@ -101,30 +103,36 @@ def preprocess_multimodal_dataset(bench: str) -> List[Dict]:
         base_image_dir = f"{DATA_ROOT}/RAVEN"
         ds = []
         for example in dsjson:
-            ds.append({
-                "image_path": base_image_dir + "/" + example["images"][0],
-                "question": "Which one of the options is the correct answer for the question?",
-                "option": "A, B, C, D, E, F, G, H.",
-                "answer": example["messages"][1]["content"],
-                "id": example["images"][0],
-                "issudoku": False,
-            })
+            ds.append(
+                {
+                    "image_path": base_image_dir + "/" + example["images"][0],
+                    "question": "Which one of the options is the correct answer for the question?",
+                    "option": "A, B, C, D, E, F, G, H.",
+                    "answer": example["messages"][1]["content"],
+                    "id": example["images"][0],
+                    "issudoku": False,
+                }
+            )
         return ds
 
     elif bench == "MARVEL":
         ds = []
         for i in range(770):  # MARVEL总共只有770个样本
             idx = i + 1
-            js = json.load(open(f"{DATA_ROOT}/MARVEL_AVR/Json_data/{idx}/{idx}_label.json"))
+            js = json.load(
+                open(f"{DATA_ROOT}/MARVEL_AVR/Json_data/{idx}/{idx}_label.json")
+            )
             image_path = f"{DATA_ROOT}/MARVEL_AVR/Json_data/{idx}/{idx}.png"
-            ds.append({
-                "image_path": image_path,
-                "question": js["avr_question"],
-                "option": "",  # MARVEL原本的question里面包含options
-                "answer": str(js["answer"]),
-                "id": idx,
-                "issudoku": False,
-            })
+            ds.append(
+                {
+                    "image_path": image_path,
+                    "question": js["avr_question"],
+                    "option": "",  # MARVEL原本的question里面包含options
+                    "answer": str(js["answer"]),
+                    "id": idx,
+                    "issudoku": False,
+                }
+            )
         return ds
 
     elif bench == "LogicVista":
@@ -132,14 +140,16 @@ def preprocess_multimodal_dataset(bench: str) -> List[Dict]:
         base_image_dir = f"{DATA_ROOT}/LogicVista/data/images"
         ds = []
         for key in dsjson.keys():
-            ds.append({
-                "image_path": base_image_dir + "/" + dsjson[key]["imagename"],
-                "question": dsjson[key]["question"],
-                "option": "",  # LogicVista 原本的question里面包含options
-                "answer": dsjson[key]["answer"],
-                "id": key,
-                "issudoku": False,
-            })
+            ds.append(
+                {
+                    "image_path": base_image_dir + "/" + dsjson[key]["imagename"],
+                    "question": dsjson[key]["question"],
+                    "option": "",  # LogicVista 原本的question里面包含options
+                    "answer": dsjson[key]["answer"],
+                    "id": key,
+                    "issudoku": False,
+                }
+            )
         return ds
 
     elif bench == "PuzzleVQA":
@@ -154,14 +164,16 @@ def preprocess_multimodal_dataset(bench: str) -> List[Dict]:
         ds = []
         for example in dsjson:
             example = json.loads(example)
-            ds.append({
-                "image_path": base_image_dir + "/" + example["image"],
-                "question": example["question"],
-                "option": str(example["options"])[1:-1] + ".",
-                "answer": example["answer"],
-                "id": example["image"].split("/")[-1],
-                "issudoku": False,
-            })
+            ds.append(
+                {
+                    "image_path": base_image_dir + "/" + example["image"],
+                    "question": example["question"],
+                    "option": str(example["options"])[1:-1] + ".",
+                    "answer": example["answer"],
+                    "id": example["image"].split("/")[-1],
+                    "issudoku": False,
+                }
+            )
         return ds
 
     elif bench == "AlgoPuzzleVQA":
@@ -176,14 +188,16 @@ def preprocess_multimodal_dataset(bench: str) -> List[Dict]:
         ds = []
         for example in dsjson:
             example = json.loads(example)
-            ds.append({
-                "image_path": base_image_dir + "/" + example["image"],
-                "question": example["question"],
-                "option": str(example["options"])[1:-1] + ".",
-                "answer": example["answer"],
-                "id": example["image"].split("/")[-1],
-                "issudoku": False,
-            })
+            ds.append(
+                {
+                    "image_path": base_image_dir + "/" + example["image"],
+                    "question": example["question"],
+                    "option": str(example["options"])[1:-1] + ".",
+                    "answer": example["answer"],
+                    "id": example["image"].split("/")[-1],
+                    "issudoku": False,
+                }
+            )
         return ds
 
     else:
@@ -222,7 +236,14 @@ def load_dataset(bench: str = "VisuRiddles") -> AVGDataset:
 
 
 # 支持的数据集列表
-SUPPORTED_DATASETS = ["VisuRiddles", "RAVEN", "MARVEL", "LogicVista", "PuzzleVQA", "AlgoPuzzleVQA"]
+SUPPORTED_DATASETS = [
+    "VisuRiddles",
+    "RAVEN",
+    "MARVEL",
+    "LogicVista",
+    "PuzzleVQA",
+    "AlgoPuzzleVQA",
+]
 
 
 if __name__ == "__main__":

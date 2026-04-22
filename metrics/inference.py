@@ -63,7 +63,7 @@ def get_visual_token_indices(input_ids: torch.Tensor, processor: AutoProcessor) 
         image_token_id = processor.tokenizer.additional_special_tokens_ids[
             processor.tokenizer.additional_special_tokens.index("<|image_pad|>")
         ]
-    except (ValueError, KeyError):
+    except (ValueError, KeyError, AttributeError):
         image_token_id = 151643
 
     batch_size = input_ids.shape[0]

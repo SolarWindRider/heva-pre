@@ -59,7 +59,9 @@ def get_image_token_id(processor) -> int:
     return image_token_id
 
 
-def build_prompt(sample: Dict[str, Any], processor, prompt_template: str = None) -> Tuple[List[Dict], str]:
+def build_prompt(
+    sample: Dict[str, Any], processor, prompt_template: str = None
+) -> Tuple[List[Dict], str]:
     """
     Build messages for Qwen3-VL chat template.
 
@@ -76,10 +78,15 @@ def build_prompt(sample: Dict[str, Any], processor, prompt_template: str = None)
     if prompt_template is None:
         prompt_template = '{question}{options}Think carefully and write the answer into a JSON form\n```json\n{{"answer": "X"}}```'
 
-    full_question = prompt_template.format(question=sample["question"], options=option_str)
+    full_question = prompt_template.format(
+        question=sample["question"], options=option_str
+    )
 
     messages = [
-        {"role": "system", "content": [{"type": "text", "text": "You are a helpful assistant."}]},
+        {
+            "role": "system",
+            "content": [{"type": "text", "text": "You are a helpful assistant."}],
+        },
         {
             "role": "user",
             "content": [
@@ -128,39 +135,10 @@ def get_critical_context_indices(
     if v_end > v_start:
         critical_indices.extend(range(v_start, v_end + 1))
 
-    for idx, t_id in enumerate(tokens):
-        t_str = processor.tokenizer.decode(t_id)
-        if any(char.isdigit() for char in t_str) or t_str.strip() in ["+", "-", "*", "/", "=", "×", "÷"]:
-            if idx not in critical_indices:
-                critical_indices.append(idx)
-
     log_print(
         f"[Context] Critical indices ({len(critical_indices)}): visual=[{v_start}, {v_end}], text_nums={len(critical_indices) - max(0, v_end - v_start + 1)}"
     )
     return sorted(critical_indices)
-
-
-def _get_critical_context_indices_from_ids(
-    input_ids: torch.Tensor,
-    processor: AutoProcessor,
-) -> List[int]:
-    """
-    Find indices of numerical and operator tokens in input_ids.
-    Mirrors the reference code's get_critical_context_indices logic.
-
-    Args:
-        input_ids: 1D tensor of token IDs
-        processor: AutoProcessor
-
-    Returns:
-        List of token indices that contain digits or operators
-    """
-    critical_indices = []
-    for idx, t_id in enumerate(input_ids):
-        t_str = processor.tokenizer.decode(t_id)
-        if any(char.isdigit() for char in t_str) or t_str.strip() in ["+", "-", "*", "/", "=", "×", "÷", ",", "."]:
-            critical_indices.append(idx)
-    return critical_indices
 
 
 # ==========================================
@@ -210,7 +188,10 @@ def compute_head_path_simple(
     max_head_idx = torch.argmax(head_contributions).item()
     max_score = head_contributions[max_head_idx].item()
 
-    return {model.model.language_model.config.num_hidden_layers - 1: {"head": max_head_idx, "score": max_score}}
+    return {
+        model.model.language_model.config.num_hidden_layers
+        - 1: {"head": max_head_idx, "score": max_score}
+    }
 
 
 # ==========================================
@@ -318,8 +299,12 @@ def attention_guided_token_selection(
         tok_id = token_ids[i].item()
         base_logit = logits[0, tok_id].item()
 
-        path = compute_head_path_simple(model, last_z, W_U, W_O_reshaped, tok_id, d_model)
-        is_valid = verify_attention_focus(attention_weights, path, critical_indices, seq_len, top_k_attn)
+        path = compute_head_path_simple(
+            model, last_z, W_U, W_O_reshaped, tok_id, d_model
+        )
+        is_valid = verify_attention_focus(
+            attention_weights, path, critical_indices, seq_len, top_k_attn
+        )
 
         if is_valid:
             valid_candidates.append(tok_id)
@@ -384,8 +369,13 @@ def generate_with_attention_guidance(
 
     prompt_token_num = inputs["input_ids"].shape[1]
 
-    visual_token_indices = get_visual_token_indices(inputs["input_ids"], processor=processor)
-    inputs_token_indices = (torch.zeros_like(visual_token_indices[0]), visual_token_indices[1])
+    visual_token_indices = get_visual_token_indices(
+        inputs["input_ids"], processor=processor
+    )
+    inputs_token_indices = (
+        torch.zeros_like(visual_token_indices[0]),
+        visual_token_indices[1],
+    )
 
     model.visual_token_indices = visual_token_indices
     model.inputs_token_indices = inputs_token_indices
@@ -393,7 +383,9 @@ def generate_with_attention_guidance(
     model.gen_vattn = []
     model.attn_acc_input = []
     model.attn_acc_visual = []
-    model.gen_zs = []  # per-layer z for DLA trace (num_layers, batch, seq, heads, d_head)
+    model.gen_zs = (
+        []
+    )  # per-layer z for DLA trace (num_layers, batch, seq, heads, d_head)
 
     # [NEW] Attention-guided generation: set critical context indices and guidance flag on model
     # Critical indices = visual token indices (image patches) in the prompt
@@ -408,7 +400,9 @@ def generate_with_attention_guidance(
         model.attn_guidance_top_k = top_k
         model.attn_guidance_topk_attn = 5
         model.dla_entropy_threshold = dla_entropy_threshold
-        log_print(f"[Attention Guidance] Critical indices: visual=[{v_start}, {v_end}], total={len(critical_indices)}")
+        log_print(
+            f"[Attention Guidance] Critical indices: visual=[{v_start}, {v_end}], total={len(critical_indices)}"
+        )
     else:
         model.use_attention_guidance = False
         model.critical_indices = []
@@ -421,7 +415,9 @@ def generate_with_attention_guidance(
             entropy_threshold=ctx_entropy_threshold,
             top_heads=ctx_top_heads,
         )
-        ctx_token_indices = get_context_token_indices(inputs["input_ids"], processor=processor)
+        ctx_token_indices = get_context_token_indices(
+            inputs["input_ids"], processor=processor
+        )
         ctx_processor.set_context_token_indices(ctx_token_indices)
         logits_processor = [ctx_processor]
 
@@ -465,7 +461,8 @@ def generate_with_attention_guidance(
         "prompt_text": processor.decode(inputs["input_ids"][0]),
         "generated_text": generated_text,
         "predicted_answer": answer_pred,
-        "correct": answer_pred != "" and answer_pred in str(sample.get("answer", "")).upper(),
+        "correct": answer_pred != ""
+        and answer_pred in str(sample.get("answer", "")).upper(),
         "prompt_token_num": prompt_token_num,
         "gen_token_num": gen_token_num,
         "gen_entropy": gen_entropy,
@@ -576,8 +573,15 @@ def run_inference(
                 prompt_template=prompt_template,
             )
 
-            sample_id = str(sample.get("id", idx)).replace("/", "_").replace("\\", "_").replace(":", "_")
-            gen_entropy_path = os.path.join(output_dir, "pkls", f"{idx}_gen_entropy.pkl")
+            sample_id = (
+                str(sample.get("id", idx))
+                .replace("/", "_")
+                .replace("\\", "_")
+                .replace(":", "_")
+            )
+            gen_entropy_path = os.path.join(
+                output_dir, "pkls", f"{idx}_gen_entropy.pkl"
+            )
             gen_vattn_path = os.path.join(output_dir, "pkls", f"{idx}_gen_vattn.pkl")
             gen_zs_path = os.path.join(output_dir, "pkls", f"{idx}_gen_zs.pkl")
 
@@ -591,7 +595,11 @@ def run_inference(
                 with open(gen_zs_path, "wb") as f:
                     pickle.dump(result["gen_zs"], f)
 
-            avg_vattn = result["gen_vattn"].mean().item() if result["gen_vattn"] is not None else 0.0
+            avg_vattn = (
+                result["gen_vattn"].mean().item()
+                if result["gen_vattn"] is not None
+                else 0.0
+            )
 
             meta = {
                 "idx": idx,
@@ -661,18 +669,35 @@ def run_inference(
 def main():
     from data.loader import SUPPORTED_DATASETS
 
-    parser = argparse.ArgumentParser(description="HEVA Attention-Guided Generation for Qwen3-VL")
+    parser = argparse.ArgumentParser(
+        description="HEVA Attention-Guided Generation for Qwen3-VL"
+    )
 
     # Experiment
-    parser.add_argument("--exp_name", type=str, default="trace_exp", help="Experiment name")
-    parser.add_argument("--dataset", type=str, default="VisuRiddles", choices=SUPPORTED_DATASETS, help="Dataset name")
-    parser.add_argument("--num_samples", type=int, default=100, help="Number of samples (-1 for all)")
-    parser.add_argument("--shuffle", type=str, default="false", choices=["true", "false"])
+    parser.add_argument(
+        "--exp_name", type=str, default="trace_exp", help="Experiment name"
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="VisuRiddles",
+        choices=SUPPORTED_DATASETS,
+        help="Dataset name",
+    )
+    parser.add_argument(
+        "--num_samples", type=int, default=100, help="Number of samples (-1 for all)"
+    )
+    parser.add_argument(
+        "--shuffle", type=str, default="false", choices=["true", "false"]
+    )
     parser.add_argument("--seed", type=int, default=42)
 
     # Model
     parser.add_argument(
-        "--model_path", type=str, default="/home/ma-user/work/Downloads/Models/Qwen/Qwen3-VL-2B-Instruct", help="Model path"
+        "--model_path",
+        type=str,
+        default="/home/ma-user/work/Downloads/Models/Qwen/Qwen3-VL-2B-Instruct",
+        help="Model path",
     )
 
     # Generation
@@ -680,20 +705,33 @@ def main():
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--top_p", type=float, default=1.0)
     parser.add_argument("--top_k", type=int, default=40)
-    parser.add_argument("--do_sample", type=str, default="true", choices=["true", "false"])
+    parser.add_argument(
+        "--do_sample", type=str, default="true", choices=["true", "false"]
+    )
 
     # Context-Aware Decoding
-    parser.add_argument("--use_context_aware", type=str, default="false", choices=["true", "false"])
+    parser.add_argument(
+        "--use_context_aware", type=str, default="false", choices=["true", "false"]
+    )
     parser.add_argument("--ctx_entropy_threshold", type=float, default=5.0)
     parser.add_argument("--ctx_top_heads", type=int, default=5)
 
     # Attention Guidance
-    parser.add_argument("--use_attention_guidance", type=str, default="false", choices=["true", "false"])
-    parser.add_argument("--dla_entropy_threshold", type=float, default=None, help="DLA only applied when entropy > threshold")
+    parser.add_argument(
+        "--use_attention_guidance", type=str, default="false", choices=["true", "false"]
+    )
+    parser.add_argument(
+        "--dla_entropy_threshold",
+        type=float,
+        default=None,
+        help="DLA only applied when entropy > threshold",
+    )
 
     # Output
     parser.add_argument("--output_dir", type=str, default="results")
-    parser.add_argument("--prompt_template", type=str, default=None, help="Custom prompt template")
+    parser.add_argument(
+        "--prompt_template", type=str, default=None, help="Custom prompt template"
+    )
 
     args = parser.parse_args()
 
@@ -739,7 +777,9 @@ def main():
 
     log_print(f"Starting inference: {len(sample_indices)} samples")
     log_print(f"Model: {args.model_path}")
-    log_print(f"Context-Aware: {use_context_aware}, Attention-Guidance: {use_attention_guidance}")
+    log_print(
+        f"Context-Aware: {use_context_aware}, Attention-Guidance: {use_attention_guidance}"
+    )
 
     run_inference(
         model_path=args.model_path,
