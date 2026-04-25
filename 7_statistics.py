@@ -44,13 +44,19 @@ def calculate_acc(exp_dir):
 
         if total_count > 0:
             acc = correct_count / total_count
-            results[bench_name] = {"correct": correct_count, "total": total_count, "acc": acc}
+            results[bench_name] = {
+                "correct": correct_count,
+                "total": total_count,
+                "acc": acc,
+            }
 
     # 打印结果
     print(f"\n{'Benchmark':<20} {'Correct':<10} {'Total':<10} {'ACC':<10}")
     print("-" * 50)
     for bench_name, stats_dict in sorted(results.items()):
-        print(f"{bench_name:<20} {stats_dict['correct']:<10} {stats_dict['total']:<10} {stats_dict['acc']:.4f}")
+        print(
+            f"{bench_name:<20} {stats_dict['correct']:<10} {stats_dict['total']:<10} {stats_dict['acc']:.4f}"
+        )
 
     # 打印总计
     total_correct = sum(s["correct"] for s in results.values())
@@ -58,7 +64,9 @@ def calculate_acc(exp_dir):
     if total_samples > 0:
         overall_acc = total_correct / total_samples
         print("-" * 50)
-        print(f"{'Overall':<20} {total_correct:<10} {total_samples:<10} {overall_acc:.4f}")
+        print(
+            f"{'Overall':<20} {total_correct:<10} {total_samples:<10} {overall_acc:.4f}"
+        )
 
     return results
 
@@ -127,7 +135,9 @@ def analyze_response_length_correlation(exp_dir):
     print(f"\n{'Benchmark':<20} {'Avg Length':<15} {'Correct Rate':<15}")
     print("-" * 50)
     for bench_name, stats_dict in sorted(bench_results.items()):
-        print(f"{bench_name:<20} {stats_dict['avg_length']:<15.1f} {stats_dict['correct_rate']:<15.4f}")
+        print(
+            f"{bench_name:<20} {stats_dict['avg_length']:<15.1f} {stats_dict['correct_rate']:<15.4f}"
+        )
 
     # 计算每个benchmark的相关性
     print(f"\n各Benchmark回答长度与正确性的相关性:")
@@ -257,7 +267,9 @@ def analyze_entropy_vattn_correlation(exp_dir):
                         vattn = vattn.float().squeeze().numpy()
 
                     # 确保长度一致
-                    assert len(entropy) == len(vattn), f"Length mismatch: entropy({len(entropy)}) vs vattn({len(vattn)}) in {json_file}"
+                    assert len(entropy) == len(
+                        vattn
+                    ), f"Length mismatch: entropy({len(entropy)}) vs vattn({len(vattn)}) in {json_file}"
 
                     # 计算相关系数
                     if len(entropy) > 10 and entropy.std() > 0 and vattn.std() > 0:
@@ -309,10 +321,14 @@ def analyze_entropy_vattn_correlation(exp_dir):
 
     # 统计显著性检验
     if len(all_correct_correlations) > 0 and len(all_incorrect_correlations) > 0:
-        t_stat, p_value = stats.ttest_ind(all_correct_correlations, all_incorrect_correlations)
+        t_stat, p_value = stats.ttest_ind(
+            all_correct_correlations, all_incorrect_correlations
+        )
         print(f"\n  T检验: t={t_stat:.4f}, p={p_value:.4e}")
         if len(all_correct_correlations) > 10 and len(all_incorrect_correlations) > 10:
-            mw_stat, mw_p = stats.mannwhitneyu(all_correct_correlations, all_incorrect_correlations)
+            mw_stat, mw_p = stats.mannwhitneyu(
+                all_correct_correlations, all_incorrect_correlations
+            )
             print(f"  Mann-Whitney U检验: U={mw_stat:.1f}, p={mw_p:.4e}")
 
     # 按benchmark统计
@@ -410,7 +426,9 @@ def analyze_high_entropy_vattn(exp_dir, top_percent=0.2):
                         vattn = pickle.load(f)
                         vattn = vattn.float().squeeze().numpy()
 
-                    assert len(entropy) == len(vattn), f"Length mismatch: entropy({len(entropy)}) vs vattn({len(vattn)}) in {json_file}"
+                    assert len(entropy) == len(
+                        vattn
+                    ), f"Length mismatch: entropy({len(entropy)}) vs vattn({len(vattn)}) in {json_file}"
 
                     if len(entropy) < 50:
                         continue
@@ -454,8 +472,12 @@ def analyze_high_entropy_vattn(exp_dir, top_percent=0.2):
     print(f"\n整体统计 (N={len(all_vattn_high_entropy)}):")
     print(f"  高熵token平均视觉注意力: {np.mean(all_vattn_high_entropy):.6f}")
     print(f"  低熵token平均视觉注意力: {np.mean(all_vattn_low_entropy):.6f}")
-    print(f"  差值 (高-低): {np.mean(all_vattn_high_entropy) - np.mean(all_vattn_low_entropy):.6f}")
-    print(f"  比值 (高/低): {np.mean(all_vattn_high_entropy) / np.mean(all_vattn_low_entropy):.4f}")
+    print(
+        f"  差值 (高-低): {np.mean(all_vattn_high_entropy) - np.mean(all_vattn_low_entropy):.6f}"
+    )
+    print(
+        f"  比值 (高/低): {np.mean(all_vattn_high_entropy) / np.mean(all_vattn_low_entropy):.4f}"
+    )
 
     # 统计检验
     t_stat, p_value = stats.ttest_rel(all_vattn_high_entropy, all_vattn_low_entropy)
@@ -469,14 +491,18 @@ def analyze_high_entropy_vattn(exp_dir, top_percent=0.2):
 
     # 按benchmark统计
     print(f"\n各Benchmark统计:")
-    print(f"{'Benchmark':<20} {'High-视觉注意力':<12} {'Low-视觉注意力':<12} {'Diff':<12} {'Ratio':<10}")
+    print(
+        f"{'Benchmark':<20} {'High-视觉注意力':<12} {'Low-视觉注意力':<12} {'Diff':<12} {'Ratio':<10}"
+    )
     print("-" * 66)
     for bench_name, stats_dict in sorted(bench_results.items()):
         high_mean = np.mean(stats_dict["vattn_high"])
         low_mean = np.mean(stats_dict["vattn_low"])
         diff = high_mean - low_mean
         ratio = high_mean / low_mean if low_mean > 0 else 0
-        print(f"{bench_name:<20} {high_mean:<12.6f} {low_mean:<12.6f} {diff:<12.6f} {ratio:<10.4f}")
+        print(
+            f"{bench_name:<20} {high_mean:<12.6f} {low_mean:<12.6f} {diff:<12.6f} {ratio:<10.4f}"
+        )
 
     # 分析：验证HEVA假设
     print(f"\n" + "=" * 60)
@@ -762,7 +788,9 @@ def verify_heva_hypothesis(exp_dir, top_percent=0.2):
                         vattn = pickle.load(f)
                         vattn = vattn.float().squeeze().numpy()
 
-                    assert len(entropy) == len(vattn), f"Length mismatch: entropy({len(entropy)}) vs vattn({len(vattn)}) in {json_file}"
+                    assert len(entropy) == len(
+                        vattn
+                    ), f"Length mismatch: entropy({len(entropy)}) vs vattn({len(vattn)}) in {json_file}"
                     if len(entropy) < 50:
                         continue
 
@@ -794,8 +822,12 @@ def verify_heva_hypothesis(exp_dir, top_percent=0.2):
 
     # 1. 基本统计
     print(f"\n1. 基本统计:")
-    print(f"   正确样本 (N={len(correct_heva)}): HEVA均值={correct_heva.mean():.6f}, 中位数={np.median(correct_heva):.6f}")
-    print(f"   错误样本 (N={len(incorrect_heva)}): HEVA均值={incorrect_heva.mean():.6f}, 中位数={np.median(incorrect_heva):.6f}")
+    print(
+        f"   正确样本 (N={len(correct_heva)}): HEVA均值={correct_heva.mean():.6f}, 中位数={np.median(correct_heva):.6f}"
+    )
+    print(
+        f"   错误样本 (N={len(incorrect_heva)}): HEVA均值={incorrect_heva.mean():.6f}, 中位数={np.median(incorrect_heva):.6f}"
+    )
     print(f"   差异: 均值差={correct_heva.mean() - incorrect_heva.mean():.6f}")
 
     # 2. 统计检验
@@ -805,12 +837,18 @@ def verify_heva_hypothesis(exp_dir, top_percent=0.2):
     print(f"   独立样本t检验: t={t_stat:.4f}, p={t_pval:.4e}")
 
     # Mann-Whitney U检验 (非参数)
-    u_stat, u_pval = stats.mannwhitneyu(correct_heva, incorrect_heva, alternative="greater")
+    u_stat, u_pval = stats.mannwhitneyu(
+        correct_heva, incorrect_heva, alternative="greater"
+    )
     print(f"   Mann-Whitney U检验 (单侧): U={u_stat:.1f}, p={u_pval:.4e}")
 
     # 效应量 (Cohen's d)
     pooled_std = np.sqrt((correct_heva.std() ** 2 + incorrect_heva.std() ** 2) / 2)
-    cohens_d = (correct_heva.mean() - incorrect_heva.mean()) / pooled_std if pooled_std > 0 else 0
+    cohens_d = (
+        (correct_heva.mean() - incorrect_heva.mean()) / pooled_std
+        if pooled_std > 0
+        else 0
+    )
     print(f"   效应量 (Cohen's d): {cohens_d:.4f}")
     if abs(cohens_d) >= 0.8:
         effect_size = "大效应"
@@ -824,24 +862,38 @@ def verify_heva_hypothesis(exp_dir, top_percent=0.2):
 
     # 3. 各Benchmark对比
     print(f"\n3. 各Benchmark对比:")
-    print(f"   {'Benchmark':<18} {'正确HEVA':<14} {'错误HEVA':<14} {'差值':<12} {'p-value':<12}")
+    print(
+        f"   {'Benchmark':<18} {'正确HEVA':<14} {'错误HEVA':<14} {'差值':<12} {'p-value':<12}"
+    )
     print(f"   {'-'*70}")
     for bench_name in sorted(bench_correct_heva.keys()):
         c_heva = np.array(bench_correct_heva[bench_name])
         ic_heva = np.array(bench_incorrect_heva[bench_name])
 
-        if len(c_heva) > 2 and len(ic_heva) > 2 and c_heva.std() > 0 and ic_heva.std() > 0:
+        if (
+            len(c_heva) > 2
+            and len(ic_heva) > 2
+            and c_heva.std() > 0
+            and ic_heva.std() > 0
+        ):
             _, pval = stats.ttest_ind(c_heva, ic_heva)
             diff = c_heva.mean() - ic_heva.mean()
-            print(f"   {bench_name:<18} {c_heva.mean():<14.6f} {ic_heva.mean():<14.6f} {diff:<12.6f} {pval:<12.4e}")
+            print(
+                f"   {bench_name:<18} {c_heva.mean():<14.6f} {ic_heva.mean():<14.6f} {diff:<12.6f} {pval:<12.4e}"
+            )
         else:
-            print(f"   {bench_name:<18} {c_heva.mean():<14.6f} {ic_heva.mean():<14.6f} {'N/A':<12} {'N/A':<12}")
+            print(
+                f"   {bench_name:<18} {c_heva.mean():<14.6f} {ic_heva.mean():<14.6f} {'N/A':<12} {'N/A':<12}"
+            )
 
     # 4. HEVA阈值预测能力
     print(f"\n4. HEVA阈值预测能力:")
 
     # 找最佳阈值
-    thresholds = np.percentile(np.concatenate([correct_heva, incorrect_heva]), [10, 20, 30, 40, 50, 60, 70, 80, 90])
+    thresholds = np.percentile(
+        np.concatenate([correct_heva, incorrect_heva]),
+        [10, 20, 30, 40, 50, 60, 70, 80, 90],
+    )
 
     print(f"   {'阈值':<12} {'>阈值正确率':<14} {'<阈值正确率':<14} {'提升':<10}")
     print(f"   {'-'*50}")
@@ -855,13 +907,17 @@ def verify_heva_hypothesis(exp_dir, top_percent=0.2):
 
         # 总体正确率
         all_heva = np.concatenate([correct_heva, incorrect_heva])
-        all_correct = np.concatenate([np.ones(len(correct_heva)), np.zeros(len(incorrect_heva))])
+        all_correct = np.concatenate(
+            [np.ones(len(correct_heva)), np.zeros(len(incorrect_heva))]
+        )
 
         acc_above = all_correct[all_heva >= thresh].mean()
         acc_below = all_correct[all_heva < thresh].mean()
         improvement = acc_above - acc_below
 
-        print(f"   {thresh:<12.6f} {acc_above:<14.4f} {acc_below:<14.4f} {improvement:<10.4f}")
+        print(
+            f"   {thresh:<12.6f} {acc_above:<14.4f} {acc_below:<14.4f} {improvement:<10.4f}"
+        )
 
         if improvement > best_improvement:
             best_improvement = improvement
@@ -874,7 +930,9 @@ def verify_heva_hypothesis(exp_dir, top_percent=0.2):
 
     if t_pval < 0.05 and correct_heva.mean() > incorrect_heva.mean():
         print(f"✓ 假设验证成功！")
-        print(f"  - 正确样本的HEVA显著更高 ({correct_heva.mean():.6f} vs {incorrect_heva.mean():.6f})")
+        print(
+            f"  - 正确样本的HEVA显著更高 ({correct_heva.mean():.6f} vs {incorrect_heva.mean():.6f})"
+        )
         print(f"  - 统计检验显著 (p={t_pval:.4e})")
         print(f"  - 效应量为{effect_size} (d={cohens_d:.4f})")
         print(f"  - 最佳阈值: {best_thresh:.6f}, 可提升正确率 {best_improvement:.2%}")
@@ -1013,7 +1071,9 @@ def analyze_entropy_token_patterns(exp_dir, top_percent=0.2):
     labels = ["开头0-25%", "25-50%", "50-75%", "结尾75-100%"]
     print(f"\n   按位置区间分布:")
     for i in range(len(bins) - 1):
-        mask = (all_entropy_positions >= bins[i]) & (all_entropy_positions < bins[i + 1])
+        mask = (all_entropy_positions >= bins[i]) & (
+            all_entropy_positions < bins[i + 1]
+        )
         pct = mask.sum() / len(all_entropy_positions) * 100
         print(f"   {labels[i]}: {pct:.1f}%")
 
@@ -1028,7 +1088,9 @@ def analyze_entropy_token_patterns(exp_dir, top_percent=0.2):
 
     # 3. 熵值分布
     print(f"\n3. 熵值分布:")
-    print(f"   高熵token熵值: 均值={all_entropy_values.mean():.4f}, 范围=[{all_entropy_values.min():.4f}, {all_entropy_values.max():.4f}]")
+    print(
+        f"   高熵token熵值: 均值={all_entropy_values.mean():.4f}, 范围=[{all_entropy_values.min():.4f}, {all_entropy_values.max():.4f}]"
+    )
     print(
         f"   低熵token熵值: 均值={all_low_entropy_values.mean():.4f}, 范围=[{all_low_entropy_values.min():.4f}, {all_low_entropy_values.max():.4f}]"
     )
@@ -1075,7 +1137,9 @@ def analyze_high_entropy_text(exp_dir, top_percent=0.2, num_samples=5):
 
     # 加载分词器
     try:
-        tokenizer = AutoTokenizer.from_pretrained("../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(
+            "../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking", trust_remote_code=True
+        )
     except:
         print("Warning: Cannot load tokenizer, skipping text analysis")
         return
@@ -1137,15 +1201,21 @@ def analyze_high_entropy_text(exp_dir, top_percent=0.2, num_samples=5):
                 # 按位置分组显示
                 if sample_count < num_samples:
                     print(f"\n--- {bench_name} (样本 {sample_count+1}) ---")
-                    print(f"总token数: {len(entropy)}, 高熵token数: {len(high_entropy_indices)}")
-                    print(f"高熵token位置: 均值={np.mean(high_entropy_indices)/len(entropy):.3f}")
+                    print(
+                        f"总token数: {len(entropy)}, 高熵token数: {len(high_entropy_indices)}"
+                    )
+                    print(
+                        f"高熵token位置: 均值={np.mean(high_entropy_indices)/len(entropy):.3f}"
+                    )
 
                     # 显示开头的高熵token
                     print(f"\n开头部分高熵token (前10个):")
                     for idx in high_entropy_indices[:10]:
                         if idx < len(tokens):
                             token_text = tokenizer.decode([tokens[idx]])
-                            print(f'  [{idx:4d}] pos={idx/len(entropy):.3f}, entropy={entropy[idx]:.4f}, text="{token_text}"')
+                            print(
+                                f'  [{idx:4d}] pos={idx/len(entropy):.3f}, entropy={entropy[idx]:.4f}, text="{token_text}"'
+                            )
 
                     # 显示中间的高熵token
                     mid_start = len(high_entropy_indices) // 3
@@ -1154,14 +1224,18 @@ def analyze_high_entropy_text(exp_dir, top_percent=0.2, num_samples=5):
                     for idx in high_entropy_indices[mid_start : mid_start + 10]:
                         if idx < len(tokens):
                             token_text = tokenizer.decode([tokens[idx]])
-                            print(f'  [{idx:4d}] pos={idx/len(entropy):.3f}, entropy={entropy[idx]:.4f}, text="{token_text}"')
+                            print(
+                                f'  [{idx:4d}] pos={idx/len(entropy):.3f}, entropy={entropy[idx]:.4f}, text="{token_text}"'
+                            )
 
                     # 显示结尾的高熵token
                     print(f"\n结尾部分高熵token (最后10个):")
                     for idx in high_entropy_indices[-10:]:
                         if idx < len(tokens):
                             token_text = tokenizer.decode([tokens[idx]])
-                            print(f'  [{idx:4d}] pos={idx/len(entropy):.3f}, entropy={entropy[idx]:.4f}, text="{token_text}"')
+                            print(
+                                f'  [{idx:4d}] pos={idx/len(entropy):.3f}, entropy={entropy[idx]:.4f}, text="{token_text}"'
+                            )
 
                     sample_count += 1
 
@@ -1315,18 +1389,34 @@ def compare_thinking_vs_instruct(thinking_exp_dir, instruct_exp_dir, top_percent
                 except Exception as e:
                     continue
 
-        return np.array(sample_hevas), np.array(sample_positions), np.array(sample_entropies)
+        return (
+            np.array(sample_hevas),
+            np.array(sample_positions),
+            np.array(sample_entropies),
+        )
 
-    thinking_hevas, thinking_positions, thinking_entropies = collect_data(thinking_exp_dir)
-    instruct_hevas, instruct_positions, instruct_entropies = collect_data(instruct_exp_dir)
+    thinking_hevas, thinking_positions, thinking_entropies = collect_data(
+        thinking_exp_dir
+    )
+    instruct_hevas, instruct_positions, instruct_entropies = collect_data(
+        instruct_exp_dir
+    )
 
     print(f"\n1. HEVA对比:")
-    print(f"   Thinking模型: 均值={thinking_hevas.mean():.6f}, 中位数={np.median(thinking_hevas):.6f}")
-    print(f"   Instruct模型: 均值={instruct_hevas.mean():.6f}, 中位数={np.median(instruct_hevas):.6f}")
+    print(
+        f"   Thinking模型: 均值={thinking_hevas.mean():.6f}, 中位数={np.median(thinking_hevas):.6f}"
+    )
+    print(
+        f"   Instruct模型: 均值={instruct_hevas.mean():.6f}, 中位数={np.median(instruct_hevas):.6f}"
+    )
 
     print(f"\n2. 高熵Token位置对比:")
-    print(f"   Thinking模型: 均值={thinking_positions.mean():.4f}, 中位数={np.median(thinking_positions):.4f}")
-    print(f"   Instruct模型: 均值={instruct_positions.mean():.4f}, 中位数={np.median(instruct_positions):.4f}")
+    print(
+        f"   Thinking模型: 均值={thinking_positions.mean():.4f}, 中位数={np.median(thinking_positions):.4f}"
+    )
+    print(
+        f"   Instruct模型: 均值={instruct_positions.mean():.4f}, 中位数={np.median(instruct_positions):.4f}"
+    )
 
     print(f"\n3. 高熵Token熵值对比:")
     print(f"   Thinking模型: 均值={thinking_entropies.mean():.4f}")
@@ -1336,7 +1426,10 @@ def compare_thinking_vs_instruct(thinking_exp_dir, instruct_exp_dir, top_percent
     print(f"   {'模型':<15} {'开头30%':<12} {'中间40%':<12} {'结尾30%':<12}")
     print(f"   {'-'*51}")
 
-    for name, positions in [("Thinking", thinking_positions), ("Instruct", instruct_positions)]:
+    for name, positions in [
+        ("Thinking", thinking_positions),
+        ("Instruct", instruct_positions),
+    ]:
         head = (positions < 0.3).mean() * 100
         mid = ((positions >= 0.3) & (positions < 0.7)).mean() * 100
         tail = (positions >= 0.7).mean() * 100
@@ -1355,8 +1448,16 @@ def compare_thinking_vs_instruct(thinking_exp_dir, instruct_exp_dir, top_percent
         print(f"   Instruct模型: 高熵token位置分布与Thinking不同")
 
     return {
-        "thinking": {"hevas": thinking_hevas, "positions": thinking_positions, "entropies": thinking_entropies},
-        "instruct": {"hevas": instruct_hevas, "positions": instruct_positions, "entropies": instruct_entropies},
+        "thinking": {
+            "hevas": thinking_hevas,
+            "positions": thinking_positions,
+            "entropies": thinking_entropies,
+        },
+        "instruct": {
+            "hevas": instruct_hevas,
+            "positions": instruct_positions,
+            "entropies": instruct_entropies,
+        },
     }
 
 
@@ -1436,7 +1537,9 @@ def analyze_attn_acc(exp_dir):
                 "incorrect_input_accs": np.array(incorrect_input_accs),
                 "correct_visual_accs": np.array(correct_visual_accs),
                 "incorrect_visual_accs": np.array(incorrect_visual_accs),
-                "all_correct": np.array([1] * len(correct_input_accs) + [0] * len(incorrect_input_accs)),
+                "all_correct": np.array(
+                    [1] * len(correct_input_accs) + [0] * len(incorrect_input_accs)
+                ),
             }
 
     print(f"\n{'='*60}")
@@ -1458,33 +1561,63 @@ def analyze_attn_acc(exp_dir):
     all_correct = np.concatenate([d["all_correct"] for d in bench_results.values()])
 
     print("-" * 60)
-    print(f"{'Overall':<20} {all_input.mean():<15.4f} {all_visual.mean():<15.4f} {len(all_input):<10}")
+    print(
+        f"{'Overall':<20} {all_input.mean():<15.4f} {all_visual.mean():<15.4f} {len(all_input):<10}"
+    )
 
     # 按正确性分组统计
     print(f"\n{'='*60}")
     print("按回答正确性分组")
     print(f"{'='*60}")
 
-    print(f"\n{'Benchmark':<20} {'正确-Input':<15} {'错误-Input':<15} {'正确-Visual':<15} {'错误-Visual':<15}")
+    print(
+        f"\n{'Benchmark':<20} {'正确-Input':<15} {'错误-Input':<15} {'正确-Visual':<15} {'错误-Visual':<15}"
+    )
     print("-" * 75)
 
     for bench_name in sorted(bench_results.keys()):
         data = bench_results[bench_name]
-        correct_in = data["correct_input_accs"].mean() if len(data["correct_input_accs"]) > 0 else 0
-        incorrect_in = data["incorrect_input_accs"].mean() if len(data["incorrect_input_accs"]) > 0 else 0
-        correct_vis = data["correct_visual_accs"].mean() if len(data["correct_visual_accs"]) > 0 else 0
-        incorrect_vis = data["incorrect_visual_accs"].mean() if len(data["incorrect_visual_accs"]) > 0 else 0
+        correct_in = (
+            data["correct_input_accs"].mean()
+            if len(data["correct_input_accs"]) > 0
+            else 0
+        )
+        incorrect_in = (
+            data["incorrect_input_accs"].mean()
+            if len(data["incorrect_input_accs"]) > 0
+            else 0
+        )
+        correct_vis = (
+            data["correct_visual_accs"].mean()
+            if len(data["correct_visual_accs"]) > 0
+            else 0
+        )
+        incorrect_vis = (
+            data["incorrect_visual_accs"].mean()
+            if len(data["incorrect_visual_accs"]) > 0
+            else 0
+        )
 
         n_correct = len(data["correct_input_accs"])
         n_incorrect = len(data["incorrect_input_accs"])
 
-        print(f"{bench_name:<20} {correct_in:<15.4f} {incorrect_in:<15.4f} {correct_vis:<15.4f} {incorrect_vis:<15.4f}")
+        print(
+            f"{bench_name:<20} {correct_in:<15.4f} {incorrect_in:<15.4f} {correct_vis:<15.4f} {incorrect_vis:<15.4f}"
+        )
 
     # 整体正确/错误对比
-    all_correct_input = np.concatenate([d["correct_input_accs"] for d in bench_results.values()])
-    all_incorrect_input = np.concatenate([d["incorrect_input_accs"] for d in bench_results.values()])
-    all_correct_visual = np.concatenate([d["correct_visual_accs"] for d in bench_results.values()])
-    all_incorrect_visual = np.concatenate([d["incorrect_visual_accs"] for d in bench_results.values()])
+    all_correct_input = np.concatenate(
+        [d["correct_input_accs"] for d in bench_results.values()]
+    )
+    all_incorrect_input = np.concatenate(
+        [d["incorrect_input_accs"] for d in bench_results.values()]
+    )
+    all_correct_visual = np.concatenate(
+        [d["correct_visual_accs"] for d in bench_results.values()]
+    )
+    all_incorrect_visual = np.concatenate(
+        [d["incorrect_visual_accs"] for d in bench_results.values()]
+    )
 
     print("-" * 75)
     print(
@@ -1541,8 +1674,12 @@ def analyze_attn_acc(exp_dir):
     low_acc = (all_correct > 0)[low_mask].mean()
     high_acc = (all_correct > 0)[high_mask].mean()
 
-    print(f"  低Visual_ACC组 (<{median_visual:.4f}): 正确率={low_acc:.4f}, 样本数={low_mask.sum()}")
-    print(f"  高Visual_ACC组 (>={median_visual:.4f}): 正确率={high_acc:.4f}, 样本数={high_mask.sum()}")
+    print(
+        f"  低Visual_ACC组 (<{median_visual:.4f}): 正确率={low_acc:.4f}, 样本数={low_mask.sum()}"
+    )
+    print(
+        f"  高Visual_ACC组 (>={median_visual:.4f}): 正确率={high_acc:.4f}, 样本数={high_mask.sum()}"
+    )
 
     # 按四分位数分组
     q25 = np.percentile(all_visual, 25)
@@ -1668,7 +1805,9 @@ def analyze_vattn_distribution(exp_dir):
                 "count": len(bench_vattn),
             }
 
-    print(f"{'Benchmark':<20} {'Mean':<10} {'Std':<10} {'Q1':<10} {'Q2':<10} {'Q3':<10} {'N':<10}")
+    print(
+        f"{'Benchmark':<20} {'Mean':<10} {'Std':<10} {'Q1':<10} {'Q2':<10} {'Q3':<10} {'N':<10}"
+    )
     print("-" * 80)
     for bench_name, stats_dict in sorted(bench_results.items()):
         print(
@@ -1692,7 +1831,9 @@ def analyze_entropy_distribution(exp_dir, threshold=None):
     exp_path = Path(exp_dir)
 
     all_entropy = []  # 展平成一维的所有熵值
-    bench_entropy_data = {}  # bench_name -> list of entropy arrays (for threshold analysis)
+    bench_entropy_data = (
+        {}
+    )  # bench_name -> list of entropy arrays (for threshold analysis)
 
     for bench_dir in sorted(exp_path.iterdir()):
         if not bench_dir.is_dir():
@@ -1751,26 +1892,46 @@ def analyze_entropy_distribution(exp_dir, threshold=None):
         print(f"\n{'='*60}")
         print(f"ENTROPY Threshold 划分统计 (threshold={threshold})")
         print(f"{'='*60}")
-        print(f"  > {threshold} 的 token 数: {above_mask.sum()} ({above_mask.mean()*100:.2f}%)")
-        print(f"  <= {threshold} 的 token 数: {below_mask.sum()} ({below_mask.mean()*100:.2f}%)")
         print(
-            f"  高于阈值 token 的平均熵: {all_entropy[above_mask].mean():.6f}" if above_mask.sum() > 0 else "  高于阈值 token 的平均熵: N/A"
+            f"  > {threshold} 的 token 数: {above_mask.sum()} ({above_mask.mean()*100:.2f}%)"
         )
         print(
-            f"  低于阈值 token 的平均熵: {all_entropy[below_mask].mean():.6f}" if below_mask.sum() > 0 else "  低于阈值 token 的平均熵: N/A"
+            f"  <= {threshold} 的 token 数: {below_mask.sum()} ({below_mask.mean()*100:.2f}%)"
+        )
+        print(
+            f"  高于阈值 token 的平均熵: {all_entropy[above_mask].mean():.6f}"
+            if above_mask.sum() > 0
+            else "  高于阈值 token 的平均熵: N/A"
+        )
+        print(
+            f"  低于阈值 token 的平均熵: {all_entropy[below_mask].mean():.6f}"
+            if below_mask.sum() > 0
+            else "  低于阈值 token 的平均熵: N/A"
         )
 
         # 按 benchmark 分组
         print(f"\n  各 Benchmark Threshold 划分:")
-        print(f"  {'Benchmark':<20} {'Above%':<10} {'Below%':<10} {'Above>Avg':<12} {'Below<=Avg':<12}")
+        print(
+            f"  {'Benchmark':<20} {'Above%':<10} {'Below%':<10} {'Above>Avg':<12} {'Below<=Avg':<12}"
+        )
         print(f"  {'-'*64}")
         for bench_name in sorted(bench_entropy_data.keys()):
             bench_arr = np.concatenate(bench_entropy_data[bench_name])
             above = (bench_arr > threshold).mean() * 100
             below = (bench_arr <= threshold).mean() * 100
-            above_avg = bench_arr[bench_arr > threshold].mean() if (bench_arr > threshold).sum() > 0 else 0
-            below_avg = bench_arr[bench_arr <= threshold].mean() if (bench_arr <= threshold).sum() > 0 else 0
-            print(f"  {bench_name:<20} {above:<10.2f} {below:<10.2f} {above_avg:<12.6f} {below_avg:<12.6f}")
+            above_avg = (
+                bench_arr[bench_arr > threshold].mean()
+                if (bench_arr > threshold).sum() > 0
+                else 0
+            )
+            below_avg = (
+                bench_arr[bench_arr <= threshold].mean()
+                if (bench_arr <= threshold).sum() > 0
+                else 0
+            )
+            print(
+                f"  {bench_name:<20} {above:<10.2f} {below:<10.2f} {above_avg:<12.6f} {below_avg:<12.6f}"
+            )
 
     # 按 bench 分组统计四分位数
     print(f"\n{'='*60}")
@@ -1817,7 +1978,9 @@ def analyze_entropy_distribution(exp_dir, threshold=None):
                 "count": len(bench_entropy),
             }
 
-    print(f"{'Benchmark':<20} {'Mean':<10} {'Std':<10} {'Q1':<10} {'Q2':<10} {'Q3':<10} {'N':<10}")
+    print(
+        f"{'Benchmark':<20} {'Mean':<10} {'Std':<10} {'Q1':<10} {'Q2':<10} {'Q3':<10} {'N':<10}"
+    )
     print("-" * 80)
     for bench_name, stats_dict in sorted(bench_results.items()):
         print(
@@ -1864,7 +2027,11 @@ def analyze_answer_proportion(exp_dir):
 
         if bench_total > 0:
             proportion = has_answer_count / bench_total
-            results[bench_name] = {"has_answer": has_answer_count, "total": bench_total, "proportion": proportion}
+            results[bench_name] = {
+                "has_answer": has_answer_count,
+                "total": bench_total,
+                "proportion": proportion,
+            }
 
     # 打印结果
     print(f"\n{'='*60}")
@@ -1874,17 +2041,23 @@ def analyze_answer_proportion(exp_dir):
     print(f"\n{'Benchmark':<20} {'有回答':<10} {'总数':<10} {'比例':<10}")
     print("-" * 50)
     for bench_name, stats_dict in sorted(results.items()):
-        print(f"{bench_name:<20} {stats_dict['has_answer']:<10} {stats_dict['total']:<10} {stats_dict['proportion']:.4f}")
+        print(
+            f"{bench_name:<20} {stats_dict['has_answer']:<10} {stats_dict['total']:<10} {stats_dict['proportion']:.4f}"
+        )
 
     if total_count > 0:
         overall_proportion = total_has_answer / total_count
         print("-" * 50)
-        print(f"{'Overall':<20} {total_has_answer:<10} {total_count:<10} {overall_proportion:.4f}")
+        print(
+            f"{'Overall':<20} {total_has_answer:<10} {total_count:<10} {overall_proportion:.4f}"
+        )
 
     return results
 
 
-def analyze_high_entropy_tokens_detail(exp_dir, top_percent=0.2, sample_id=None, num_samples=10):
+def analyze_high_entropy_tokens_detail(
+    exp_dir, top_percent=0.2, sample_id=None, num_samples=10
+):
     """
     分析高熵token的详细信息，包括：
     1. 高熵token在文本中的具体位置（字符级别）
@@ -1904,10 +2077,14 @@ def analyze_high_entropy_tokens_detail(exp_dir, top_percent=0.2, sample_id=None,
 
     # 加载分词器
     try:
-        tokenizer = AutoTokenizer.from_pretrained("../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(
+            "../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking", trust_remote_code=True
+        )
     except:
         try:
-            tokenizer = AutoTokenizer.from_pretrained("../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct", trust_remote_code=True)
+            tokenizer = AutoTokenizer.from_pretrained(
+                "../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct", trust_remote_code=True
+            )
         except:
             print("Warning: Cannot load tokenizer, skipping detail analysis")
             return
@@ -1997,7 +2174,9 @@ def analyze_high_entropy_tokens_detail(exp_dir, top_percent=0.2, sample_id=None,
                             try:
                                 # 将token位置映射到字符位置（近似）
                                 prefix_tokens = tokens[max(0, idx - 2) : idx]
-                                suffix_tokens = tokens[idx + 1 : min(idx + 3, len(tokens))]
+                                suffix_tokens = tokens[
+                                    idx + 1 : min(idx + 3, len(tokens))
+                                ]
                                 prefix_text = tokenizer.decode(prefix_tokens)
                                 suffix_text = tokenizer.decode(suffix_tokens)
                                 current_text = tokenizer.decode([tokens[idx]])
@@ -2024,7 +2203,9 @@ def analyze_high_entropy_tokens_detail(exp_dir, top_percent=0.2, sample_id=None,
     print(f"\n1. 高熵Token整体统计:")
     print(f"   总高熵token数: {len(all_high_token_texts)}")
     print(f"   平均熵值: {np.mean(all_high_entropy_values):.4f}")
-    print(f"   熵值范围: [{np.min(all_high_entropy_values):.4f}, {np.max(all_high_entropy_values):.4f}]")
+    print(
+        f"   熵值范围: [{np.min(all_high_entropy_values):.4f}, {np.max(all_high_entropy_values):.4f}]"
+    )
 
     # 位置分布
     all_high_token_positions = np.array(all_high_token_positions)
@@ -2036,7 +2217,9 @@ def analyze_high_entropy_tokens_detail(exp_dir, top_percent=0.2, sample_id=None,
     labels = ["0-20%", "20-40%", "40-60%", "60-80%", "80-100%"]
     print(f"\n   位置区间分布:")
     for i in range(len(bins) - 1):
-        mask = (all_high_token_positions >= bins[i]) & (all_high_token_positions < bins[i + 1])
+        mask = (all_high_token_positions >= bins[i]) & (
+            all_high_token_positions < bins[i + 1]
+        )
         pct = mask.sum() / len(all_high_token_positions) * 100
         print(f"   {labels[i]}: {pct:.1f}%")
 
@@ -2060,7 +2243,12 @@ def analyze_high_entropy_tokens_detail(exp_dir, top_percent=0.2, sample_id=None,
     other = []
 
     for text in all_high_token_texts:
-        if text in tokenizer.all_special_tokens or text in ["<|endoftext|>", "<|pad|>", "<|image_pad|>", "<|video_pad|>"]:
+        if text in tokenizer.all_special_tokens or text in [
+            "<|endoftext|>",
+            "<|pad|>",
+            "<|image_pad|>",
+            "<|video_pad|>",
+        ]:
             special_tokens.append(text)
         elif re.search(r"[\u4e00-\u9fff]", text):
             chinese_chars.append(text)
@@ -2073,11 +2261,21 @@ def analyze_high_entropy_tokens_detail(exp_dir, top_percent=0.2, sample_id=None,
         else:
             other.append(text)
 
-    print(f"   特殊Token: {len(special_tokens)} ({len(special_tokens)/len(all_high_token_texts)*100:.1f}%)")
-    print(f"   中文字符: {len(chinese_chars)} ({len(chinese_chars)/len(all_high_token_texts)*100:.1f}%)")
-    print(f"   英文字符: {len(english_words)} ({len(english_words)/len(all_high_token_texts)*100:.1f}%)")
-    print(f"   数字: {len(numbers)} ({len(numbers)/len(all_high_token_texts)*100:.1f}%)")
-    print(f"   标点符号: {len(punctuation)} ({len(punctuation)/len(all_high_token_texts)*100:.1f}%)")
+    print(
+        f"   特殊Token: {len(special_tokens)} ({len(special_tokens)/len(all_high_token_texts)*100:.1f}%)"
+    )
+    print(
+        f"   中文字符: {len(chinese_chars)} ({len(chinese_chars)/len(all_high_token_texts)*100:.1f}%)"
+    )
+    print(
+        f"   英文字符: {len(english_words)} ({len(english_words)/len(all_high_token_texts)*100:.1f}%)"
+    )
+    print(
+        f"   数字: {len(numbers)} ({len(numbers)/len(all_high_token_texts)*100:.1f}%)"
+    )
+    print(
+        f"   标点符号: {len(punctuation)} ({len(punctuation)/len(all_high_token_texts)*100:.1f}%)"
+    )
     print(f"   其他: {len(other)} ({len(other)/len(all_high_token_texts)*100:.1f}%)")
 
     # 详细样本展示
@@ -2089,8 +2287,12 @@ def analyze_high_entropy_tokens_detail(exp_dir, top_percent=0.2, sample_id=None,
         print(f"\n--- 样本 {i+1}: {sample['bench']} ---")
         print(f"    Sample ID: {sample['sample_id']}")
         print(f"    正确性: {'✓' if sample['correct'] else '✗'}")
-        print(f"    答案: pred={sample['predicted_answer']}, gt={sample['ground_truth']}")
-        print(f"    总Token数: {sample['total_tokens']}, 高熵Token数: {len(sample['high_entropy_tokens'])}")
+        print(
+            f"    答案: pred={sample['predicted_answer']}, gt={sample['ground_truth']}"
+        )
+        print(
+            f"    总Token数: {sample['total_tokens']}, 高熵Token数: {len(sample['high_entropy_tokens'])}"
+        )
 
         print(f"\n    高熵Token详情:")
         print(f"    {'位置':<8} {'相对位置':<10} {'熵值':<10} {'Token':<15} {'上下文'}")
@@ -2128,7 +2330,13 @@ def analyze_high_entropy_tokens_detail(exp_dir, top_percent=0.2, sample_id=None,
     }
 
 
-def compare_experiments(exp1_dir: str, exp2_dir: str, exp1_name: str = "exp001", exp2_name: str = "exp002", output_file: str = None):
+def compare_experiments(
+    exp1_dir: str,
+    exp2_dir: str,
+    exp1_name: str = "exp001",
+    exp2_name: str = "exp002",
+    output_file: str = None,
+):
     """
     对比两组实验的结果，分类统计每个样本在两组实验中的正确性变化。
 
@@ -2204,7 +2412,12 @@ def compare_experiments(exp1_dir: str, exp2_dir: str, exp1_name: str = "exp001",
             both_wrong.append(sid)
             cat = "both_wrong"
         if bench not in bench_detail:
-            bench_detail[bench] = {"both_correct": [], "exp1_correct_exp2_wrong": [], "exp1_wrong_exp2_correct": [], "both_wrong": []}
+            bench_detail[bench] = {
+                "both_correct": [],
+                "exp1_correct_exp2_wrong": [],
+                "exp1_wrong_exp2_correct": [],
+                "both_wrong": [],
+            }
         bench_detail[bench][cat].append(sid)
 
     total = len(common_ids)
@@ -2216,16 +2429,24 @@ def compare_experiments(exp1_dir: str, exp2_dir: str, exp1_name: str = "exp001",
     _print(f"共同样本数: {total}")
     _print(f"\n{'类别':<50} {'数量':<10} {'占比':<10}")
     _print("-" * 70)
-    _print(f"{'Both√ (都做对)':<50} {len(both_correct):<10} {len(both_correct)/total:.2%}")
-    _print(f"{'√→× (做对→做错)':<50} {len(exp1_correct_exp2_wrong):<10} {len(exp1_correct_exp2_wrong)/total:.2%}")
-    _print(f"{'×→√ (做错→纠正)':<50} {len(exp1_wrong_exp2_correct):<10} {len(exp1_wrong_exp2_correct)/total:.2%}")
+    _print(
+        f"{'Both√ (都做对)':<50} {len(both_correct):<10} {len(both_correct)/total:.2%}"
+    )
+    _print(
+        f"{'√→× (做对→做错)':<50} {len(exp1_correct_exp2_wrong):<10} {len(exp1_correct_exp2_wrong)/total:.2%}"
+    )
+    _print(
+        f"{'×→√ (做错→纠正)':<50} {len(exp1_wrong_exp2_correct):<10} {len(exp1_wrong_exp2_correct)/total:.2%}"
+    )
     _print(f"{'Both× (都做错)':<50} {len(both_wrong):<10} {len(both_wrong)/total:.2%}")
 
     # ---- per-benchmark breakdown ----
     _print(f"\n{'='*70}")
     _print("各 Benchmark 详细统计")
     _print(f"{'='*70}")
-    _print(f"\n{'Benchmark':<20} {'Both√':<8} {'√→×':<10} {'×→√':<10} {'Both×':<8} {'Total':<8}")
+    _print(
+        f"\n{'Benchmark':<20} {'Both√':<8} {'√→×':<10} {'×→√':<10} {'Both×':<8} {'Total':<8}"
+    )
     _print("-" * 70)
     for bench_name in sorted(bench_detail.keys()):
         bd = bench_detail[bench_name]
@@ -2234,7 +2455,9 @@ def compare_experiments(exp1_dir: str, exp2_dir: str, exp1_name: str = "exp001",
         n_1w2c = len(bd["exp1_wrong_exp2_correct"])
         n_bw = len(bd["both_wrong"])
         n_total = n_bc + n_1c2w + n_1w2c + n_bw
-        _print(f"{bench_name:<20} {n_bc:<8} {n_1c2w:<10} {n_1w2c:<10} {n_bw:<8} {n_total:<8}")
+        _print(
+            f"{bench_name:<20} {n_bc:<8} {n_1c2w:<10} {n_1w2c:<10} {n_bw:<8} {n_total:<8}"
+        )
 
     _print("-" * 70)
     _print(
@@ -2248,7 +2471,9 @@ def compare_experiments(exp1_dir: str, exp2_dir: str, exp1_name: str = "exp001",
     n_stay_correct = len(both_correct)
 
     if n_fix + n_stay_wrong > 0:
-        _print(f"\n纠正率（{exp1_name}错样本中被{exp2_name}纠正的比例）: {n_fix/(n_fix+n_stay_wrong):.2%} ({n_fix}/{n_fix+n_stay_wrong})")
+        _print(
+            f"\n纠正率（{exp1_name}错样本中被{exp2_name}纠正的比例）: {n_fix/(n_fix+n_stay_wrong):.2%} ({n_fix}/{n_fix+n_stay_wrong})"
+        )
     if n_regress + n_stay_correct > 0:
         _print(
             f"退化率（{exp1_name}对样本中{exp2_name}做错的比例）: {n_regress/(n_regress+n_stay_correct):.2%} ({n_regress}/{n_regress+n_stay_correct})"
@@ -2274,7 +2499,9 @@ def compare_experiments(exp1_dir: str, exp2_dir: str, exp1_name: str = "exp001",
         _print(f"\n{'='*70}")
         _print(f"被纠正的样本（×→√，共{len(exp1_wrong_exp2_correct)}个）")
         _print(f"{'='*70}")
-        _print(f"\n{'sample_id':<40} {'bench':<15} {'gt':<10} {exp1_name+'_pred':<15} {exp2_name+'_pred':<15}")
+        _print(
+            f"\n{'sample_id':<40} {'bench':<15} {'gt':<10} {exp1_name+'_pred':<15} {exp2_name+'_pred':<15}"
+        )
         _print("-" * 100)
         for sid in sorted(exp1_wrong_exp2_correct):
             m1, m2 = meta1[sid], meta2[sid]
@@ -2286,7 +2513,9 @@ def compare_experiments(exp1_dir: str, exp2_dir: str, exp1_name: str = "exp001",
         _print(f"\n{'='*70}")
         _print(f"退化的样本（√→×，共{len(exp1_correct_exp2_wrong)}个）")
         _print(f"{'='*70}")
-        _print(f"\n{'sample_id':<40} {'bench':<15} {'gt':<10} {exp1_name+'_pred':<15} {exp2_name+'_pred':<15}")
+        _print(
+            f"\n{'sample_id':<40} {'bench':<15} {'gt':<10} {exp1_name+'_pred':<15} {exp2_name+'_pred':<15}"
+        )
         _print("-" * 100)
         for sid in sorted(exp1_correct_exp2_wrong):
             m1, m2 = meta1[sid], meta2[sid]
@@ -2307,7 +2536,7 @@ def compare_experiments(exp1_dir: str, exp2_dir: str, exp1_name: str = "exp001",
 
 
 if __name__ == "__main__":
-    # calculate_acc("./results/exp005")
+    # calculate_acc("./results/exp041")
     # calculate_acc("./results/exp006")
     # compare_experiments(
     #     "./results/exp002",
@@ -2322,6 +2551,6 @@ if __name__ == "__main__":
     # analyze_high_entropy_tokens_detail(expdir, top_percent=0.2, num_samples=10)
     # analyze_answer_proportion("./results/exp005")
     # analyze_answer_proportion("./results/exp006")
-    analyze_vattn_distribution("./results/exp005")
-    analyze_vattn_distribution("./results/exp006")
-    # analyze_entropy_distribution("./results/exp005", threshold=1.5)
+    # analyze_vattn_distribution("./results/exp005")
+    # analyze_vattn_distribution("./results/exp006")
+    analyze_entropy_distribution("./results/exp041", threshold=1.2)

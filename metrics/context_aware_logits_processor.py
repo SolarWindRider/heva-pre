@@ -130,9 +130,12 @@ def compute_token_support_from_attentions(
     # Get W_O (output projection) and W_U (unembedding)
     try:
         W_O = last_layer.self_attn.o_proj.weight
-        # W_O shape: (d_model, d_model) = (2048, 2048)
-        # Need to split by head: (d_model, heads, d_head)
-        W_O = W_O.view(d_model, num_heads, head_dim)
+        # W_O shape: (d_model, n_heads * head_dim)
+        # For 2B: (2048, 2048), for 4B: (2560, 4096)
+        n_heads_cfg = model.model.language_model.config.num_attention_heads
+        d_model = W_O.shape[0]
+        head_dim = W_O.shape[1] // n_heads_cfg  # use output dim to compute head_dim
+        W_O = W_O.view(n_heads_cfg, head_dim, d_model)  # (n_heads, head_dim, d_model)
     except AttributeError:
         W_O = None
 
@@ -153,11 +156,11 @@ def compute_token_support_from_attentions(
             # z shape: (batch, seq, heads, d_head) = (1, 1, 16, 128)
             head_z = z[0, -1, head_idx, :]  # (d_head,)
 
-            # W_O for this head: (d_model, d_head)
-            head_W_O = W_O[:, head_idx, :]  # (d_model, d_head)
+            # W_O for this head: (head_dim, d_model)
+            head_W_O = W_O[head_idx, :, :]  # (head_dim, d_model)
 
             # head_output = z @ W_O[head]: (d_model,)
-            head_output = head_z @ head_W_O.T  # (d_model,)
+            head_output = head_z @ head_W_O  # (d_model,)
 
             # contribution = head_output · W_U[token]: scalar
             token_W_U = W_U[token_id.item(), :]  # (d_model,)
