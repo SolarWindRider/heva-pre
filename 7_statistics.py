@@ -2536,7 +2536,10 @@ def compare_experiments(
 
 
 if __name__ == "__main__":
-    # calculate_acc("./results/exp041")
+    exp = "./results/exp027"
+    calculate_acc(exp)
+    analyze_answer_proportion(exp)
+    analyze_vattn_distribution(exp)
     # calculate_acc("./results/exp006")
     # compare_experiments(
     #     "./results/exp002",
@@ -2549,8 +2552,8 @@ if __name__ == "__main__":
     # # 高熵token详细分析
     # expdir = "./results/exp021"
     # analyze_high_entropy_tokens_detail(expdir, top_percent=0.2, num_samples=10)
-    # analyze_answer_proportion("./results/exp005")
+    # analyze_answer_proportion("./results/exp047")
     # analyze_answer_proportion("./results/exp006")
-    # analyze_vattn_distribution("./results/exp005")
+    # analyze_vattn_distribution("./results/exp047")
     # analyze_vattn_distribution("./results/exp006")
-    analyze_entropy_distribution("./results/exp041", threshold=1.2)
+    # analyze_entropy_distribution("./results/exp021", threshold=1.27)

@@ -453,16 +453,35 @@ def generate_with_attention_guidance(
     generated_text = processor.decode(outputs.sequences[0][prompt_token_num:])
 
     answer_pred = ""
-    json_match = re.search(r'\{\s*"answer"\s*:\s*"([^"]+)"\s*\}', generated_text)
-    if json_match:
-        answer_pred = json_match.group(1).upper()
+    answer_format = sample.get("answer_format", "mcq")
+
+    if answer_format == "open_vqa":
+        # VQAv2: try JSON first, then fallback to pattern matching
+        json_match = re.search(r'\{\s*"answer"\s*:\s*"([^"]+)"\s*\}', generated_text)
+        if json_match:
+            answer_pred = json_match.group(1).upper()
+        else:
+            match = re.search(r'(?:the answer is|answer:)\s*([a-z]+)', generated_text, re.I)
+            if match:
+                answer_pred = match.group(1).upper()
+            else:
+                # Fallback: extract longest word as answer
+                words = re.findall(r'\b[a-z]{2,}\b', generated_text)
+                answer_pred = max(words, key=len).upper() if words else ""
+        gt = str(sample.get("answer", "")).upper()
+        correct = answer_pred != "" and answer_pred == gt
+    else:
+        # MCQ format (A/B/C/D)
+        json_match = re.search(r'\{\s*"answer"\s*:\s*"([^"]+)"\s*\}', generated_text)
+        if json_match:
+            answer_pred = json_match.group(1).upper()
+        correct = answer_pred != "" and answer_pred in str(sample.get("answer", "")).upper()
 
     return {
         "prompt_text": processor.decode(inputs["input_ids"][0]),
         "generated_text": generated_text,
         "predicted_answer": answer_pred,
-        "correct": answer_pred != ""
-        and answer_pred in str(sample.get("answer", "")).upper(),
+        "correct": correct,
         "prompt_token_num": prompt_token_num,
         "gen_token_num": gen_token_num,
         "gen_entropy": gen_entropy,

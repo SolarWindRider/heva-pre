@@ -1,0 +1,88 @@
+# CUDA_VISIBLE_DEVICES=2 nohup python ./experiments/1_run_inference.py --exp_name exp001 --dataset MARVEL --alpha_values 0.2 --batch_size 1 --max_new_tokens 12288 --num_gpus 1  > MARVEL_print2.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=0,1,2,3  python 1_run_inference.py --exp_name exp001 --dataset MARVEL --max_new_tokens 12000
+# CUDA_VISIBLE_DEVICES=0,1 nohup python 2_run_inference_heva_force.py --exp_name exp021 --model_path ../Downloads/Models/Qwen/Qwen3-VL-8B-Thinking --dataset VisuRiddles     > exp021_VisuRiddles.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=2,3 nohup python 2_run_inference_heva_force.py --exp_name exp021 --model_path ../Downloads/Models/Qwen/Qwen3-VL-8B-Thinking --dataset RAVEN > exp021_RAVEN.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=4,5 nohup python 2_run_inference_heva_force.py --exp_name exp021 --model_path ../Downloads/Models/Qwen/Qwen3-VL-8B-Thinking --dataset MARVEL > exp021_MARVEL.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=6,7 nohup python 2_run_inference_heva_force.py --exp_name exp021 --model_path ../Downloads/Models/Qwen/Qwen3-VL-8B-Thinking --dataset LogicVista > exp021_LogicVista.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=4 nohup python 2_run_inference_heva_force.py --exp_name exp021 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset PuzzleVQA > exp021_PuzzleVQA.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=5 nohup python 2_run_inference_heva_force.py --exp_name exp021 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset AlgoPuzzleVQA > exp021_AlgoPuzzleVQA.out 2>&1 &
+
+# CUDA_VISIBLE_DEVICES=6 nohup python 1_run_inference.py --exp_name exp006 --model_path ../Downloads/Models/Qwen/Qwen3-VL-4B-Instruct --dataset VisuRiddles     > exp006_VisuRiddles.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=7 nohup python 1_run_inference.py --exp_name exp006 --model_path ../Downloads/Models/Qwen/Qwen3-VL-4B-Instruct --dataset RAVEN > exp006_RAVEN.out 2>&1 &
+
+# CUDA_VISIBLE_DEVICES=6 nohup python 1_run_inference.py --exp_name exp006 --model_path ../Downloads/Models/Qwen/Qwen3-VL-4B-Instruct --dataset MARVEL     > exp006_MARVEL.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=7 nohup python 1_run_inference.py --exp_name exp006 --model_path ../Downloads/Models/Qwen/Qwen3-VL-4B-Instruct --dataset LogicVista > exp006_LogicVista.out 2>&1 &
+
+
+# CUDA_VISIBLE_DEVICES=0 nohup python 1_run_inference.py --exp_name exp007 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset VisuRiddles     > exp007_VisuRiddles.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=1 nohup python 1_run_inference.py --exp_name exp007 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset RAVEN > exp007_RAVEN.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=2 nohup python 1_run_inference.py --exp_name exp007 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset MARVEL > exp007_MARVEL.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=3 nohup python 1_run_inference.py --exp_name exp007 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset LogicVista > exp007_LogicVista.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=4 nohup python 1_run_inference.py --exp_name exp007 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset PuzzleVQA > exp007_PuzzleVQA.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=5 nohup python 1_run_inference.py --exp_name exp007 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset AlgoPuzzleVQA > exp007_AlgoPuzzleVQA.out 2>&1 &
+
+# CUDA_VISIBLE_DEVICES=0 nohup python 2_run_inference_heva_force.py --exp_name exp010 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct --dataset VisuRiddles     > exp010_VisuRiddles.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=1 nohup python 2_run_inference_heva_force.py --exp_name exp010 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct --dataset RAVEN > exp010_RAVEN.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=2 nohup python 2_run_inference_heva_force.py --exp_name exp010 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct --dataset MARVEL > exp010_MARVEL.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=3 nohup python 2_run_inference_heva_force.py --exp_name exp010 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct --dataset LogicVista > exp010_LogicVista.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=4 nohup python 2_run_inference_heva_force.py --exp_name exp010 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct --dataset PuzzleVQA > exp010_PuzzleVQA.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=5 nohup python 2_run_inference_heva_force.py --exp_name exp010 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct --dataset AlgoPuzzleVQA > exp010_AlgoPuzzleVQA.out 2>&1 &
+
+
+# ============================================================
+# 所有token都用 DLA 实验：3_run_inference_trace.py + --use_attention_guidance true
+# ============================================================
+CUDA_VISIBLE_DEVICES=0 nohup python 3_run_inference_trace.py --exp_name exp004 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset VisuRiddles   --use_attention_guidance true --use_context_aware false  > exp004_VisuRiddles.out 2>&1 &
+CUDA_VISIBLE_DEVICES=1 nohup python 3_run_inference_trace.py --exp_name exp004 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset RAVEN         --use_attention_guidance true --use_context_aware false  > exp004_RAVEN.out 2>&1 &
+CUDA_VISIBLE_DEVICES=2 nohup python 3_run_inference_trace.py --exp_name exp004 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset MARVEL        --use_attention_guidance true --use_context_aware false  > exp004_MARVEL.out 2>&1 &
+CUDA_VISIBLE_DEVICES=3 nohup python 3_run_inference_trace.py --exp_name exp004 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset LogicVista    --use_attention_guidance true --use_context_aware false  > exp004_LogicVista.out 2>&1 &
+CUDA_VISIBLE_DEVICES=4 nohup python 3_run_inference_trace.py --exp_name exp004 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset PuzzleVQA     --use_attention_guidance true --use_context_aware false  > exp004_PuzzleVQA.out 2>&1 &
+CUDA_VISIBLE_DEVICES=5 nohup python 3_run_inference_trace.py --exp_name exp004 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset AlgoPuzzleVQA --use_attention_guidance true --use_context_aware false  > exp004_AlgoPuzzleVQA.out 2>&1 &
+
+CUDA_VISIBLE_DEVICES=0 nohup python 3_run_inference_trace.py --exp_name exp003 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct --dataset VisuRiddles   --use_attention_guidance true --use_context_aware false  > exp003_VisuRiddles.out 2>&1 &
+CUDA_VISIBLE_DEVICES=1 nohup python 3_run_inference_trace.py --exp_name exp003 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct --dataset RAVEN         --use_attention_guidance true --use_context_aware false  > exp003_RAVEN.out 2>&1 &
+CUDA_VISIBLE_DEVICES=2 nohup python 3_run_inference_trace.py --exp_name exp003 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct --dataset MARVEL        --use_attention_guidance true --use_context_aware false  > exp003_MARVEL.out 2>&1 &
+CUDA_VISIBLE_DEVICES=3 nohup python 3_run_inference_trace.py --exp_name exp003 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct --dataset LogicVista    --use_attention_guidance true --use_context_aware false  > exp003_LogicVista.out 2>&1 &
+CUDA_VISIBLE_DEVICES=4 nohup python 3_run_inference_trace.py --exp_name exp003 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct --dataset PuzzleVQA     --use_attention_guidance true --use_context_aware false  > exp003_PuzzleVQA.out 2>&1 &
+CUDA_VISIBLE_DEVICES=5 nohup python 3_run_inference_trace.py --exp_name exp003 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct --dataset AlgoPuzzleVQA --use_attention_guidance true --use_context_aware false  > exp003_AlgoPuzzleVQA.out 2>&1 &
+
+
+# # ============================================================
+# # DLA + CAD 叠加实验
+# # ============================================================
+CUDA_VISIBLE_DEVICES=7 nohup python 3_run_inference_trace.py --exp_name exp006 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset VisuRiddles   --dla_entropy_threshold 1.27 --use_attention_guidance true --use_context_aware true --ctx_entropy_threshold 1.27  > exp006_VisuRiddles.out 2>&1 &
+CUDA_VISIBLE_DEVICES=7 nohup python 3_run_inference_trace.py --exp_name exp006 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset RAVEN         --dla_entropy_threshold 1.27 --use_attention_guidance true --use_context_aware true --ctx_entropy_threshold 1.27  > exp006_RAVEN.out 2>&1 &
+CUDA_VISIBLE_DEVICES=7 nohup python 3_run_inference_trace.py --exp_name exp006 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset MARVEL        --dla_entropy_threshold 1.27 --use_attention_guidance true --use_context_aware true --ctx_entropy_threshold 1.27  > exp006_MARVEL.out 2>&1 &
+CUDA_VISIBLE_DEVICES=7 nohup python 3_run_inference_trace.py --exp_name exp006 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset LogicVista    --dla_entropy_threshold 1.27 --use_attention_guidance true --use_context_aware true --ctx_entropy_threshold 1.27  > exp006_LogicVista.out 2>&1 &
+CUDA_VISIBLE_DEVICES=7 nohup python 3_run_inference_trace.py --exp_name exp006 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset PuzzleVQA     --dla_entropy_threshold 1.27 --use_attention_guidance true --use_context_aware true --ctx_entropy_threshold 1.27  > exp006_PuzzleVQA.out 2>&1 &
+CUDA_VISIBLE_DEVICES=7 nohup python 3_run_inference_trace.py --exp_name exp006 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset AlgoPuzzleVQA --dla_entropy_threshold 1.27 --use_attention_guidance true --use_context_aware true --ctx_entropy_threshold 1.27  > exp006_AlgoPuzzleVQA.out 2>&1 &
+
+CUDA_VISIBLE_DEVICES=7 nohup python 3_run_inference_trace.py --exp_name exp005 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct --dataset VisuRiddles   --dla_entropy_threshold 1.27 --use_attention_guidance true --use_context_aware true --ctx_entropy_threshold 1.27  > exp005_VisuRiddles.out 2>&1 &
+CUDA_VISIBLE_DEVICES=7 nohup python 3_run_inference_trace.py --exp_name exp005 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct --dataset RAVEN         --dla_entropy_threshold 1.27 --use_attention_guidance true --use_context_aware true --ctx_entropy_threshold 1.27  > exp005_RAVEN.out 2>&1 &
+CUDA_VISIBLE_DEVICES=7 nohup python 3_run_inference_trace.py --exp_name exp005 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct --dataset MARVEL        --dla_entropy_threshold 1.27 --use_attention_guidance true --use_context_aware true --ctx_entropy_threshold 1.27  > exp005_MARVEL.out 2>&1 &
+CUDA_VISIBLE_DEVICES=7 nohup python 3_run_inference_trace.py --exp_name exp005 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct --dataset LogicVista    --dla_entropy_threshold 1.27 --use_attention_guidance true --use_context_aware true --ctx_entropy_threshold 1.27  > exp005_LogicVista.out 2>&1 &
+CUDA_VISIBLE_DEVICES=7 nohup python 3_run_inference_trace.py --exp_name exp005 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct --dataset PuzzleVQA     --dla_entropy_threshold 1.27 --use_attention_guidance true --use_context_aware true --ctx_entropy_threshold 1.27  > exp005_PuzzleVQA.out 2>&1 &
+CUDA_VISIBLE_DEVICES=7 nohup python 3_run_inference_trace.py --exp_name exp005 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Instruct --dataset AlgoPuzzleVQA --dla_entropy_threshold 1.27 --use_attention_guidance true --use_context_aware true --ctx_entropy_threshold 1.27  > exp005_AlgoPuzzleVQA.out 2>&1 &
+
+
+# # ============================================================
+# # 高熵DLA 实验
+# # ============================================================
+
+# CUDA_VISIBLE_DEVICES=0 nohup python 3_run_inference_trace.py --exp_name exp007 --model_path /data/public/model/Qwen/Qwen3-VL-2B-Instruct --dataset VisuRiddles   --use_attention_guidance true --dla_entropy_threshold 1.27 --use_context_aware false  > exp007_VisuRiddles.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=1 nohup python 3_run_inference_trace.py --exp_name exp007 --model_path /data/public/model/Qwen/Qwen3-VL-2B-Instruct --dataset RAVEN         --use_attention_guidance true --dla_entropy_threshold 1.27 --use_context_aware false  > exp007_RAVEN.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=2 nohup python 3_run_inference_trace.py --exp_name exp007 --model_path /data/public/model/Qwen/Qwen3-VL-2B-Instruct --dataset MARVEL        --use_attention_guidance true --dla_entropy_threshold 1.27 --use_context_aware false  > exp007_MARVEL.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=3 nohup python 3_run_inference_trace.py --exp_name exp007 --model_path /data/public/model/Qwen/Qwen3-VL-2B-Instruct --dataset LogicVista    --use_attention_guidance true --dla_entropy_threshold 1.27 --use_context_aware false  > exp007_LogicVista.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=6 nohup python 3_run_inference_trace.py --exp_name exp007 --model_path /data/public/model/Qwen/Qwen3-VL-2B-Instruct --dataset PuzzleVQA     --num_samples -1 --use_attention_guidance true --dla_entropy_threshold 1.27 --use_context_aware false  > exp007_PuzzleVQA.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=7 nohup python 3_run_inference_trace.py --exp_name exp007 --model_path /data/public/model/Qwen/Qwen3-VL-2B-Instruct --dataset AlgoPuzzleVQA --num_samples -1 --use_attention_guidance true --dla_entropy_threshold 1.27 --use_context_aware false  > exp007_AlgoPuzzleVQA.out 2>&1 &
+
+# CUDA_VISIBLE_DEVICES=6 nohup python 3_run_inference_trace.py --exp_name exp007 --model_path /data/public/model/Qwen/Qwen3-VL-2B-Instruct --dataset PuzzleVQA      --use_attention_guidance true --dla_entropy_threshold 1.27 --use_context_aware false  > exp007_PuzzleVQA.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=6 nohup python 3_run_inference_trace.py --exp_name exp007 --model_path /data/public/model/Qwen/Qwen3-VL-2B-Instruct --dataset AlgoPuzzleVQA  --use_attention_guidance true --dla_entropy_threshold 1.27 --use_context_aware false  > exp007_AlgoPuzzleVQA.out 2>&1 &
+
+
+# CUDA_VISIBLE_DEVICES=6 nohup python 3_run_inference_trace.py --exp_name exp008 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset VisuRiddles   --use_attention_guidance true --dla_entropy_threshold 1.27 --use_context_aware false  > exp008_VisuRiddles.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=6 nohup python 3_run_inference_trace.py --exp_name exp008 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset RAVEN         --use_attention_guidance true --dla_entropy_threshold 1.27 --use_context_aware false  > exp008_RAVEN.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=6 nohup python 3_run_inference_trace.py --exp_name exp008 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset MARVEL        --use_attention_guidance true --dla_entropy_threshold 1.27 --use_context_aware false  > exp008_MARVEL.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=6 nohup python 3_run_inference_trace.py --exp_name exp008 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset LogicVista    --use_attention_guidance true --dla_entropy_threshold 1.27 --use_context_aware false  > exp008_LogicVista.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=6 nohup python 3_run_inference_trace.py --exp_name exp008 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset PuzzleVQA     --use_attention_guidance true --dla_entropy_threshold 1.27 --use_context_aware false  > exp008_PuzzleVQA.out 2>&1 &
+# CUDA_VISIBLE_DEVICES=6 nohup python 3_run_inference_trace.py --exp_name exp008 --model_path ../Downloads/Models/Qwen/Qwen3-VL-2B-Thinking --dataset AlgoPuzzleVQA --use_attention_guidance true --dla_entropy_threshold 1.27 --use_context_aware false  > exp008_AlgoPuzzleVQA.out 2>&1 &

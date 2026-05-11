@@ -1,0 +1,14 @@
+CUDA_VISIBLE_DEVICES=0  python 3_run_inference_trace.py --exp_name exp022 --model_path /data/public/model/Qwen/Qwen3-VL-2B-Instruct --dataset VisuRiddles   --use_attention_guidance false --use_context_aware false   > exp022_VisuRiddles.out 2>&1
+CUDA_VISIBLE_DEVICES=0  python 3_run_inference_trace.py --exp_name exp022 --model_path /data/public/model/Qwen/Qwen3-VL-2B-Instruct --dataset RAVEN         --use_attention_guidance false --use_context_aware false   > exp022_RAVEN.out 2>&1
+CUDA_VISIBLE_DEVICES=0  python 3_run_inference_trace.py --exp_name exp022 --model_path /data/public/model/Qwen/Qwen3-VL-2B-Instruct --dataset MARVEL        --use_attention_guidance false --use_context_aware false   > exp022_MARVEL.out 2>&1
+# CUDA_VISIBLE_DEVICES=0  python 3_run_inference_trace.py --exp_name exp022 --model_path /data/public/model/Qwen/Qwen3-VL-2B-Instruct --dataset LogicVista    --use_attention_guidance false --use_context_aware false   > exp022_LogicVista.out 2>&1
+# CUDA_VISIBLE_DEVICES=0  python 3_run_inference_trace.py --exp_name exp022 --model_path /data/public/model/Qwen/Qwen3-VL-2B-Instruct --dataset PuzzleVQA     --use_attention_guidance false --use_context_aware false   > exp022_PuzzleVQA.out 2>&1
+# CUDA_VISIBLE_DEVICES=0  python 3_run_inference_trace.py --exp_name exp022 --model_path /data/public/model/Qwen/Qwen3-VL-2B-Instruct --dataset AlgoPuzzleVQA --use_attention_guidance false --use_context_aware false   > exp022_AlgoPuzzleVQA.out 2>&1
+
+# CUDA_VISIBLE_DEVICES=0  python 3_run_inference_trace.py --exp_name exp021 --model_path /data/public/model/Qwen/Qwen3-VL-2B-Thinking --dataset VisuRiddles   --use_attention_guidance false --use_context_aware false   > exp021_VisuRiddles.out 2>&1
+# CUDA_VISIBLE_DEVICES=0  python 3_run_inference_trace.py --exp_name exp021 --model_path /data/public/model/Qwen/Qwen3-VL-2B-Thinking --dataset RAVEN         --use_attention_guidance false --use_context_aware false   > exp021_RAVEN.out 2>&1
+# CUDA_VISIBLE_DEVICES=0  python 3_run_inference_trace.py --exp_name exp021 --model_path /data/public/model/Qwen/Qwen3-VL-2B-Thinking --dataset MARVEL        --use_attention_guidance false --use_context_aware false   > exp021_MARVEL.out 2>&1
+# CUDA_VISIBLE_DEVICES=0  python 3_run_inference_trace.py --exp_name exp021 --model_path /data/public/model/Qwen/Qwen3-VL-2B-Thinking --dataset LogicVista    --use_attention_guidance false --use_context_aware false   > exp021_LogicVista.out 2>&1
+# CUDA_VISIBLE_DEVICES=0  python 3_run_inference_trace.py --exp_name exp021 --model_path /data/public/model/Qwen/Qwen3-VL-2B-Thinking --dataset PuzzleVQA     --use_attention_guidance false --use_context_aware false   > exp021_PuzzleVQA.out 2>&1
+# CUDA_VISIBLE_DEVICES=0  python 3_run_inference_trace.py --exp_name exp021 --model_path /data/public/model/Qwen/Qwen3-VL-2B-Thinking --dataset AlgoPuzzleVQA --use_attention_guidance false --use_context_aware false   > exp021_AlgoPuzzleVQA.out 2>&1
+

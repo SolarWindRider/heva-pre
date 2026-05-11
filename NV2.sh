@@ -1,0 +1,7 @@
+CUDA_VISIBLE_DEVICES=7  python 3_run_inference_trace.py --exp_name exp042 --model_path /data/public/model/Qwen/Qwen3-VL-4B-Instruct --dataset VisuRiddles   --use_attention_guidance false --use_context_aware false   > exp042_VisuRiddles.out 2>&1
+CUDA_VISIBLE_DEVICES=7  python 3_run_inference_trace.py --exp_name exp042 --model_path /data/public/model/Qwen/Qwen3-VL-4B-Instruct --dataset RAVEN         --use_attention_guidance false --use_context_aware false   > exp042_RAVEN.out 2>&1
+CUDA_VISIBLE_DEVICES=7  python 3_run_inference_trace.py --exp_name exp042 --model_path /data/public/model/Qwen/Qwen3-VL-4B-Instruct --dataset MARVEL        --use_attention_guidance false --use_context_aware false   > exp042_MARVEL.out 2>&1
+CUDA_VISIBLE_DEVICES=7  python 3_run_inference_trace.py --exp_name exp042 --model_path /data/public/model/Qwen/Qwen3-VL-4B-Instruct --dataset LogicVista    --use_attention_guidance false --use_context_aware false   > exp042_LogicVista.out 2>&1
+CUDA_VISIBLE_DEVICES=7  python 3_run_inference_trace.py --exp_name exp042 --model_path /data/public/model/Qwen/Qwen3-VL-4B-Instruct --dataset PuzzleVQA     --use_attention_guidance false --use_context_aware false   > exp042_PuzzleVQA.out 2>&1
+CUDA_VISIBLE_DEVICES=7  python 3_run_inference_trace.py --exp_name exp042 --model_path /data/public/model/Qwen/Qwen3-VL-4B-Instruct --dataset AlgoPuzzleVQA --use_attention_guidance false --use_context_aware false   > exp042_AlgoPuzzleVQA.out 2>&1
+
