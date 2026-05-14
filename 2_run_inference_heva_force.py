@@ -41,6 +41,7 @@ def run_inference(
     ctx_entropy_threshold=5.0,
     ctx_top_heads=5,
     ctx_user_indices=None,
+    batch_size=1,
 ):
     """
     运行推理并缓存结果 (增量计算HEVA，无OOM问题)
@@ -63,7 +64,6 @@ def run_inference(
     os.makedirs(f"{output_dir}/pkls", exist_ok=True)
     model, processor = load_model_processor(model_path)
 
-    # 如果使用 Context-Aware Decoding，创建 processor
     ctx_logits_processor = None
     if use_context_aware:
         ctx_logits_processor = ContextAwareLogitsProcessor(
@@ -77,83 +77,77 @@ def run_inference(
     results = []
     errors = []
 
-    for idx in tqdm(sample_indices, desc="Running inference"):
-        try:
-            sample = dataset[idx]
+    num_batches = (len(sample_indices) + batch_size - 1) // batch_size
+    for batch_start in tqdm(range(0, len(sample_indices), batch_size), desc="Batch Inference", total=num_batches):
+        batch_end = min(batch_start + batch_size, len(sample_indices))
+        batch_samples = [dataset[idx] for idx in range(batch_start, batch_end)]
 
-            # 如果使用 Context-Aware，需要先获取 context_token_indices
-            logits_processor = None
-            if use_context_aware:
-                # 构建 prompt 以获取 input_ids
-                option_str = f"option: {sample['options']}\n" if sample.get("options") else ""
-                full_question = sample["question"] + option_str + 'Think carefully and Write the answer into a JSON form\n```json\n{"answer": "X"}```'
+        for i, (idx, sample) in enumerate(zip(range(batch_start, batch_end), batch_samples)):
+            try:
+                logits_processor = None
+                if use_context_aware:
+                    option_str = f"option: {sample['options']}\n" if sample.get("options") else ""
+                    full_question = sample["question"] + option_str + 'Think carefully and Write the answer into a JSON form\n```json\n{"answer": "X"}```'
 
-                messages = [
-                    {"role": "system", "content": [{"type": "text", "text": "You are good at step by step reasoning."}]},
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image", "image": sample["image"]},
-                            {"type": "text", "text": full_question},
-                        ],
-                    },
-                ]
+                    messages = [
+                        {"role": "system", "content": [{"type": "text", "text": "You are good at step by step reasoning."}]},
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image", "image": sample["image"]},
+                                {"type": "text", "text": full_question},
+                            ],
+                        },
+                    ]
 
-                inputs = processor.apply_chat_template(
-                    messages,
-                    tokenize=True,
-                    add_generation_prompt=True,
-                    return_dict=True,
-                    return_tensors="pt",
+                    inputs = processor.apply_chat_template(
+                        messages,
+                        tokenize=True,
+                        add_generation_prompt=True,
+                        return_dict=True,
+                        return_tensors="pt",
+                    )
+                    inputs.pop("token_type_ids", None)
+
+                    if ctx_user_indices is not None:
+                        context_token_indices = ctx_user_indices
+                    else:
+                        context_token_indices = get_context_token_indices(inputs["input_ids"], processor=processor)
+
+                    ctx_logits_processor.set_context_token_indices(context_token_indices)
+                    logits_processor = [ctx_logits_processor]
+
+                result = generate_with_attn(
+                    model=model,
+                    processor=processor,
+                    image=sample["image"],
+                    question=sample["question"],
+                    options=sample.get("options", ""),
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    do_sample=do_sample,
+                    logits_processor=logits_processor,
                 )
-                inputs.pop("token_type_ids", None)
 
-                # 获取 context token indices
-                if ctx_user_indices is not None:
-                    context_token_indices = ctx_user_indices
+                if result is None:
+                    log_print(f"Warning: Failed to get valid result for idx {idx}, skipping...")
+                    continue
+
+                generated_text = result["generated_text"]
+                answer_pred = ""
+
+                import re
+
+                json_match = re.search(r"\{\"answer\":\s*\"([^\"]+)\"\}", generated_text)
+                if json_match:
+                    answer_pred = json_match.group(1).upper()
                 else:
-                    context_token_indices = get_context_token_indices(inputs["input_ids"], processor=processor)
+                    pass
 
-                ctx_logits_processor.set_context_token_indices(context_token_indices)
-                logits_processor = [ctx_logits_processor]
-
-            result = generate_with_attn(
-                model=model,
-                processor=processor,
-                image=sample["image"],
-                question=sample["question"],
-                options=sample.get("options", ""),
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                do_sample=do_sample,
-                logits_processor=logits_processor,
-            )
-
-            # 检查结果是否有效
-            if result is None:
-                log_print(f"Warning: Failed to get valid result for idx {idx}, skipping...")
-                continue
-
-            # 检查生成的答案
-            generated_text = result["generated_text"]
-            # 提取选项字母 (A, B, C, D)
-            answer_pred = ""
-
-            # 优先从JSON格式提取答案: {"answer": "X"}
-            import re
-
-            json_match = re.search(r"\{\"answer\":\s*\"([^\"]+)\"\}", generated_text)
-            if json_match:
-                answer_pred = json_match.group(1).upper()
-            else:
-                # 如果没有JSON格式，则认为回答有误，保持空字符
-                pass
-
-            sample_id = str(sample["id"])
-            # 清理sample_id中的非法文件名字符
-            sample_id = sample_id.replace("/", "_").replace("\\", "_").replace(":", "_")
+                sample_id = str(sample["id"])
+                sample_id = sample_id.replace("/", "_").replace("\\", "_").replace(":", "_")
 
             gen_vattn_path = os.path.join(output_dir, f"pkls/{idx}_gen_vattn.pkl")
             gen_entropy_path = os.path.join(output_dir, f"pkls/{idx}_gen_entropy.pkl")
@@ -259,7 +253,7 @@ def main():
     # 采样配置
     parser.add_argument("--num_samples", type=int, default=100, help="Number of samples to process (-1 for all)")
     parser.add_argument("--shuffle", type=str, default="true", choices=["true", "false"], help="Shuffle dataset before processing")
-    # parser.add_argument("--batch_size", type=int, default=1, help="Batch size for inference")
+    parser.add_argument("--batch_size", type=int, default=1, help="Batch size for inference")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     # 模型超参数
@@ -306,8 +300,7 @@ def main():
         "model_path": model_path,
         "num_samples": args.num_samples,
         "shuffle": args.shuffle,
-        # "batch_size": args.batch_size,
-        "batch_size": 1,  # 固定为1，逐样本计算HEVA，避免OOM
+        "batch_size": args.batch_size,
         "seed": args.seed,
         "max_new_tokens": args.max_new_tokens,
         "temperature": args.temperature,
@@ -369,6 +362,7 @@ def main():
         ctx_entropy_threshold=args.ctx_entropy_threshold,
         ctx_top_heads=args.ctx_top_heads,
         ctx_user_indices=ctx_user_indices,
+        batch_size=args.batch_size,
     )
 
 

@@ -11,7 +11,7 @@ from typing import Dict, List, Any
 
 
 # 数据集根目录
-DATA_ROOT = "/data2/lixiang/datas"
+DATA_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "datas"))
 
 
 # ============================================

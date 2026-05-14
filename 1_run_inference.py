@@ -32,6 +32,7 @@ def run_inference(
     top_p=0.9,
     top_k=50,
     do_sample=True,
+    batch_size=1,
 ):
     """
     运行推理并缓存结果 (增量计算HEVA，无OOM问题)
@@ -52,46 +53,44 @@ def run_inference(
     results = []
     errors = []
 
-    for idx in tqdm(sample_indices, desc="Running inference"):
-        try:
-            sample = dataset[idx]
+    num_batches = (len(sample_indices) + batch_size - 1) // batch_size
+    for batch_start in tqdm(range(0, len(sample_indices), batch_size), desc="Batch Inference", total=num_batches):
+        batch_end = min(batch_start + batch_size, len(sample_indices))
+        batch_indices = batch_start
+        batch_samples = [dataset[idx] for idx in range(batch_start, batch_end)]
 
-            result = generate_with_attn(
-                model=model,
-                processor=processor,
-                image=sample["image"],
-                question=sample["question"],
-                options=sample["options"],
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                do_sample=do_sample,
-            )
+        for i, (idx, sample) in enumerate(zip(range(batch_start, batch_end), batch_samples)):
+            try:
+                result = generate_with_attn(
+                    model=model,
+                    processor=processor,
+                    image=sample["image"],
+                    question=sample["question"],
+                    options=sample["options"],
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    do_sample=do_sample,
+                )
 
-            # 检查结果是否有效
-            if result is None:
-                log_print(f"Warning: Failed to get valid result for idx {idx}, skipping...")
-                continue
+                if result is None:
+                    log_print(f"Warning: Failed to get valid result for idx {idx}, skipping...")
+                    continue
 
-            # 检查生成的答案
-            generated_text = result["generated_text"]
-            # 提取选项字母 (A, B, C, D)
-            answer_pred = ""
+                generated_text = result["generated_text"]
+                answer_pred = ""
 
-            # 优先从JSON格式提取答案: {"answer": "X"}
-            import re
+                import re
 
-            json_match = re.search(r'\{"answer":\s*"([^"]+)"\}', generated_text)
-            if json_match:
-                answer_pred = json_match.group(1).upper()
-            else:
-                # 如果没有JSON格式，则认为回答有误，保持空字符
-                pass
+                json_match = re.search(r'\{"answer":\s*"([^"]+)"\}', generated_text)
+                if json_match:
+                    answer_pred = json_match.group(1).upper()
+                else:
+                    pass
 
-            sample_id = str(sample["id"])
-            # 清理sample_id中的非法文件名字符
-            sample_id = sample_id.replace("/", "_").replace("\\", "_").replace(":", "_")
+                sample_id = str(sample["id"])
+                sample_id = sample_id.replace("/", "_").replace("\\", "_").replace(":", "_")
 
             gen_vattn_path = os.path.join(output_dir, f"pkls/{idx}_gen_vattn.pkl")
             gen_entropy_path = os.path.join(output_dir, f"pkls/{idx}_gen_entropy.pkl")
@@ -209,7 +208,7 @@ def main():
     # 采样配置
     parser.add_argument("--num_samples", type=int, default=100, help="Number of samples to process (-1 for all)")
     parser.add_argument("--shuffle", type=str, default="true", choices=["true", "false"], help="Shuffle dataset before processing")
-    # parser.add_argument("--batch_size", type=int, default=1, help="Batch size for inference")
+    parser.add_argument("--batch_size", type=int, default=1, help="Batch size for inference")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     # 模型超参数
@@ -247,8 +246,7 @@ def main():
         "model_path": model_path,
         "num_samples": args.num_samples,
         "shuffle": args.shuffle,
-        # "batch_size": args.batch_size,
-        "batch_size": 1,  # 固定为1，逐样本计算HEVA，避免OOM
+        "batch_size": args.batch_size,
         "seed": args.seed,
         "max_new_tokens": args.max_new_tokens,
         "temperature": args.temperature,
@@ -298,6 +296,7 @@ def main():
         top_p=args.top_p,
         top_k=args.top_k,
         do_sample=args.do_sample,
+        batch_size=args.batch_size,
     )
 
 

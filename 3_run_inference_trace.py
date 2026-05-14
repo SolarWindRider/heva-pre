@@ -321,7 +321,7 @@ def attention_guided_token_selection(
 def generate_with_attention_guidance(
     model: Qwen3VLForConditionalGeneration,
     processor: AutoProcessor,
-    sample: Dict[str, Any],
+    samples: List[Dict[str, Any]],
     max_new_tokens: int = 8192,
     temperature: float = 0.7,
     top_p: float = 0.9,
@@ -333,91 +333,65 @@ def generate_with_attention_guidance(
     use_attention_guidance: bool = False,
     dla_entropy_threshold: float = None,
     prompt_template: str = None,
-) -> Dict[str, Any]:
-    """
-    Run inference with optional attention-guided generation.
+) -> List[Dict[str, Any]]:
+    batch_size = len(samples)
+    messages_list = []
+    for sample in samples:
+        msgs, _ = build_prompt(sample, processor, prompt_template)
+        messages_list.append(msgs)
 
-    Args:
-        model: Qwen3VLForConditionalGeneration model
-        processor: AutoProcessor instance
-        sample: Data sample with 'question', 'options', 'image', 'answer'
-        max_new_tokens: Maximum tokens to generate
-        temperature: Sampling temperature
-        top_p: Nucleus sampling threshold
-        top_k: Top-k sampling
-        do_sample: Whether to sample
-        use_context_aware: Use context-aware logits processor
-        ctx_entropy_threshold: Entropy threshold for context-aware mode
-        ctx_top_heads: Number of context heads for context-aware mode
-        use_attention_guidance: Use attention-guided token selection
-        prompt_template: Custom prompt template
+    all_inputs = []
+    prompt_token_nums = []
+    for msgs in messages_list:
+        inputs = processor.apply_chat_template(
+            msgs, tokenize=True, add_generation_prompt=True, return_dict=True, return_tensors="pt"
+        )
+        inputs.pop("token_type_ids", None)
+        all_inputs.append(inputs)
+        prompt_token_nums.append(inputs["input_ids"].shape[1])
 
-    Returns:
-        Dict with generation results including attention metrics
-    """
-    messages, full_question = build_prompt(sample, processor, prompt_template)
+    max_prompt_len = max(inp["input_ids"].shape[1] for inp in all_inputs)
+    batch_input_ids_list = []
+    batch_attention_mask_list = []
+    for inp in all_inputs:
+        pad_len = max_prompt_len - inp["input_ids"].shape[1]
+        if pad_len > 0:
+            batch_input_ids_list.append(torch.cat([inp["input_ids"], torch.zeros(1, pad_len, dtype=inp["input_ids"].dtype)], dim=1))
+            batch_attention_mask_list.append(torch.cat([inp["attention_mask"], torch.zeros(1, pad_len, dtype=inp["attention_mask"].dtype)], dim=1))
+        else:
+            batch_input_ids_list.append(inp["input_ids"])
+            batch_attention_mask_list.append(inp["attention_mask"])
 
-    inputs = processor.apply_chat_template(
-        messages,
-        tokenize=True,
-        add_generation_prompt=True,
-        return_dict=True,
-        return_tensors="pt",
-    )
-    inputs.pop("token_type_ids", None)
-    inputs = inputs.to(model.device)
+    batch_input_ids = torch.cat(batch_input_ids_list, dim=0).to(model.device)
+    batch_attention_mask = torch.cat(batch_attention_mask_list, dim=0).to(model.device)
+    prompt_token_num = max_prompt_len
 
-    prompt_token_num = inputs["input_ids"].shape[1]
-
-    visual_token_indices = get_visual_token_indices(
-        inputs["input_ids"], processor=processor
-    )
-    inputs_token_indices = (
-        torch.zeros_like(visual_token_indices[0]),
-        visual_token_indices[1],
-    )
-
-    model.visual_token_indices = visual_token_indices
-    model.inputs_token_indices = inputs_token_indices
+    visual_indices_list = [get_visual_token_indices(inp["input_ids"], processor=processor) for inp in all_inputs]
+    visual_start = torch.stack([v[0] for v in visual_indices_list])
+    visual_end = torch.stack([v[1] for v in visual_indices_list])
+    model.visual_token_indices = (visual_start, visual_end)
+    model.inputs_token_indices = (torch.zeros_like(visual_start), visual_end)
+    if hasattr(model, 'gen_entropy') and model.gen_entropy:
+        model.gen_entropy.clear()
     model.gen_entropy = []
     model.gen_vattn = []
     model.attn_acc_input = []
     model.attn_acc_visual = []
-    model.gen_zs = (
-        []
-    )  # per-layer z for DLA trace (num_layers, batch, seq, heads, d_head)
+    model.gen_zs = []
 
-    # [NEW] Attention-guided generation: set critical context indices and guidance flag on model
-    # Critical indices = visual token indices (image patches) in the prompt
-    # This mirrors the HEVA focus: which tokens attend to visual context?
     if use_attention_guidance:
-        # visual_token_indices is already computed above: (start, end) tensor
-        v_start = visual_token_indices[0].item()
-        v_end = visual_token_indices[1].item()
-        critical_indices = list(range(v_start, v_end + 1))
-        model.critical_indices = critical_indices
+        v_start = visual_start[0].item()
+        v_end = visual_end[0].item()
+        model.critical_indices = list(range(v_start, v_end + 1))
         model.use_attention_guidance = True
         model.attn_guidance_top_k = top_k
         model.attn_guidance_topk_attn = 5
         model.dla_entropy_threshold = dla_entropy_threshold
-        log_print(
-            f"[Attention Guidance] Critical indices: visual=[{v_start}, {v_end}], total={len(critical_indices)}"
-        )
-    else:
-        model.use_attention_guidance = False
-        model.critical_indices = []
 
     logits_processor = None
     if use_context_aware:
-        ctx_processor = ContextAwareLogitsProcessor(
-            model=model,
-            top_k=top_k,
-            entropy_threshold=ctx_entropy_threshold,
-            top_heads=ctx_top_heads,
-        )
-        ctx_token_indices = get_context_token_indices(
-            inputs["input_ids"], processor=processor
-        )
+        ctx_processor = ContextAwareLogitsProcessor(model=model, top_k=top_k, entropy_threshold=ctx_entropy_threshold, top_heads=ctx_top_heads)
+        ctx_token_indices = get_context_token_indices(batch_input_ids, processor=processor)
         ctx_processor.set_context_token_indices(ctx_token_indices)
         logits_processor = [ctx_processor]
 
@@ -431,7 +405,8 @@ def generate_with_attention_guidance(
 
     with torch.no_grad():
         outputs = model.generate(
-            **inputs,
+            input_ids=batch_input_ids,
+            attention_mask=batch_attention_mask,
             return_dict_in_generate=True,
             output_logits=True,
             output_attentions=True,
@@ -441,56 +416,62 @@ def generate_with_attention_guidance(
 
     gen_token_num = outputs.sequences.shape[1] - prompt_token_num
 
+    actual_batch_size = len(samples)
     if model.gen_entropy:
-        gen_entropy = torch.stack(model.gen_entropy, dim=1).cpu()
-        gen_vattn = torch.stack(model.gen_vattn, dim=1).cpu()
-        attn_acc_input = torch.stack(model.attn_acc_input, dim=1).cpu()
-        attn_acc_visual = torch.stack(model.attn_acc_visual, dim=1).cpu()
+        gen_entropy = torch.stack(model.gen_entropy, dim=0).cpu()
+        gen_vattn = torch.stack(model.gen_vattn, dim=0).cpu()
+        attn_acc_input = torch.stack(model.attn_acc_input, dim=0).cpu()
+        attn_acc_visual = torch.stack(model.attn_acc_visual, dim=0).cpu()
         gen_zs = [z.cpu() for z in model.gen_zs if z is not None]
+        if gen_entropy.shape[1] < actual_batch_size:
+            raise IndexError(f"gen_entropy dim=1 is {gen_entropy.shape[1]} but actual_batch_size={actual_batch_size}")
     else:
         gen_entropy = gen_vattn = attn_acc_input = attn_acc_visual = gen_zs = None
 
-    generated_text = processor.decode(outputs.sequences[0][prompt_token_num:])
+    results = []
+    for b in range(actual_batch_size):
+        generated_text = processor.decode(outputs.sequences[b][prompt_token_num:])
+        answer_pred = ""
+        answer_format = samples[b].get("answer_format", "mcq")
 
-    answer_pred = ""
-    answer_format = sample.get("answer_format", "mcq")
-
-    if answer_format == "open_vqa":
-        # VQAv2: try JSON first, then fallback to pattern matching
-        json_match = re.search(r'\{\s*"answer"\s*:\s*"([^"]+)"\s*\}', generated_text)
-        if json_match:
-            answer_pred = json_match.group(1).upper()
-        else:
-            match = re.search(r'(?:the answer is|answer:)\s*([a-z]+)', generated_text, re.I)
-            if match:
-                answer_pred = match.group(1).upper()
+        if answer_format == "open_vqa":
+            json_match = re.search(r'\{\s*"answer"\s*:\s*"([^"]+)"\s*\}', generated_text)
+            if json_match:
+                answer_pred = json_match.group(1).upper()
             else:
-                # Fallback: extract longest word as answer
-                words = re.findall(r'\b[a-z]{2,}\b', generated_text)
-                answer_pred = max(words, key=len).upper() if words else ""
-        gt = str(sample.get("answer", "")).upper()
-        correct = answer_pred != "" and answer_pred == gt
-    else:
-        # MCQ format (A/B/C/D)
-        json_match = re.search(r'\{\s*"answer"\s*:\s*"([^"]+)"\s*\}', generated_text)
-        if json_match:
-            answer_pred = json_match.group(1).upper()
-        correct = answer_pred != "" and answer_pred in str(sample.get("answer", "")).upper()
+                match = re.search(r'(?:the answer is|answer:)\s*([a-z]+)', generated_text, re.I)
+                if match:
+                    answer_pred = match.group(1).upper()
+                else:
+                    words = re.findall(r'\b[a-z]{2,}\b', generated_text)
+                    answer_pred = max(words, key=len).upper() if words else ""
+            gt = str(samples[b].get("answer", "")).upper()
+            correct = answer_pred != "" and answer_pred == gt
+        else:
+            json_match = re.search(r'\{\s*"answer"\s*:\s*"([^"]+)"\s*\}', generated_text)
+            if json_match:
+                answer_pred = json_match.group(1).upper()
+            correct = answer_pred != "" and answer_pred in str(samples[b].get("answer", "")).upper()
 
-    return {
-        "prompt_text": processor.decode(inputs["input_ids"][0]),
-        "generated_text": generated_text,
-        "predicted_answer": answer_pred,
-        "correct": correct,
-        "prompt_token_num": prompt_token_num,
-        "gen_token_num": gen_token_num,
-        "gen_entropy": gen_entropy,
-        "gen_vattn": gen_vattn,
-        "attn_acc_input": attn_acc_input,
-        "attn_acc_visual": attn_acc_visual,
-        "gen_zs": gen_zs,  # list of (num_layers, batch, seq, heads, d_head) per token
-        "sequences": outputs.sequences,
-    }
+        prompt_tokens = all_inputs[b]["input_ids"][0].tolist()
+        gen_tokens = outputs.sequences[b][prompt_token_num:].tolist()
+        results.append({
+            "prompt_text": processor.decode(all_inputs[b]["input_ids"][0]),
+            "generated_text": generated_text,
+            "predicted_answer": answer_pred,
+            "correct": correct,
+            "prompt_token_num": prompt_token_nums[b],
+            "gen_token_num": gen_token_num,
+            "prompt_tokens": prompt_tokens,
+            "gen_tokens": gen_tokens,
+            "gen_entropy": gen_entropy[:, b] if gen_entropy is not None else None,
+            "gen_vattn": gen_vattn[:, b] if gen_vattn is not None else None,
+            "attn_acc_input": attn_acc_input[:, b] if attn_acc_input is not None else None,
+            "attn_acc_visual": attn_acc_visual[:, b] if attn_acc_visual is not None else None,
+            "gen_zs": gen_zs,
+        })
+
+    return results
 
 
 # ==========================================
@@ -516,31 +497,8 @@ def run_inference(
     prompt_template: str = None,
     shuffle: bool = False,
     seed: int = 42,
+    batch_size: int = 1,
 ) -> Tuple[List[Dict], List[Dict]]:
-    """
-    Run batch inference on dataset.
-
-    Args:
-        model_path: Path to Qwen3-VL model
-        dataset_name: Name of dataset to load
-        sample_indices: List of sample indices to process
-        output_dir: Output directory
-        max_new_tokens: Maximum tokens to generate
-        temperature: Sampling temperature
-        top_p: Nucleus sampling threshold
-        top_k: Top-k sampling
-        do_sample: Whether to sample
-        use_context_aware: Enable context-aware decoding
-        ctx_entropy_threshold: Entropy threshold for CAD
-        ctx_top_heads: Number of context heads for CAD
-        use_attention_guidance: Enable attention-guided selection
-        prompt_template: Custom prompt template
-        shuffle: Shuffle dataset before processing
-        seed: Random seed
-
-    Returns:
-        (results, errors) lists
-    """
     set_seed(seed)
 
     os.makedirs(f"{output_dir}/pkls", exist_ok=True)
@@ -571,14 +529,17 @@ def run_inference(
     results = []
     errors = []
 
-    for idx in tqdm(sample_indices, desc="Inference"):
-        try:
-            sample = dataset[idx]
+    num_batches = (len(sample_indices) + batch_size - 1) // batch_size
+    for batch_start in tqdm(range(0, len(sample_indices), batch_size), desc="Batch Inference", total=num_batches):
+        batch_end = min(batch_start + batch_size, len(sample_indices))
+        batch_indices = sample_indices[batch_start:batch_end]
+        batch_samples = [dataset[idx] for idx in batch_indices]
 
-            result = generate_with_attention_guidance(
+        try:
+            batch_results = generate_with_attention_guidance(
                 model=model,
                 processor=processor,
-                sample=sample,
+                samples=batch_samples,
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
                 top_p=top_p,
@@ -592,73 +553,74 @@ def run_inference(
                 prompt_template=prompt_template,
             )
 
-            sample_id = (
-                str(sample.get("id", idx))
-                .replace("/", "_")
-                .replace("\\", "_")
-                .replace(":", "_")
-            )
-            gen_entropy_path = os.path.join(
-                output_dir, "pkls", f"{idx}_gen_entropy.pkl"
-            )
-            gen_vattn_path = os.path.join(output_dir, "pkls", f"{idx}_gen_vattn.pkl")
-            gen_zs_path = os.path.join(output_dir, "pkls", f"{idx}_gen_zs.pkl")
+            for i, (idx, result) in enumerate(zip(batch_indices, batch_results)):
+                sample = batch_samples[i]
+                sample_id = (
+                    str(sample.get("id", idx))
+                    .replace("/", "_")
+                    .replace("\\", "_")
+                    .replace(":", "_")
+                )
+                gen_entropy_path = os.path.join(output_dir, "pkls", f"{idx}_gen_entropy.pkl")
+                gen_vattn_path = os.path.join(output_dir, "pkls", f"{idx}_gen_vattn.pkl")
+                gen_zs_path = os.path.join(output_dir, "pkls", f"{idx}_gen_zs.pkl")
 
-            if result["gen_entropy"] is not None:
-                with open(gen_entropy_path, "wb") as f:
-                    pickle.dump(result["gen_entropy"], f)
-            if result["gen_vattn"] is not None:
-                with open(gen_vattn_path, "wb") as f:
-                    pickle.dump(result["gen_vattn"], f)
-            if result["gen_zs"] is not None:
-                with open(gen_zs_path, "wb") as f:
-                    pickle.dump(result["gen_zs"], f)
+                if result["gen_entropy"] is not None:
+                    with open(gen_entropy_path, "wb") as f:
+                        pickle.dump(result["gen_entropy"], f)
+                if result["gen_vattn"] is not None:
+                    with open(gen_vattn_path, "wb") as f:
+                        pickle.dump(result["gen_vattn"], f)
+                if result["gen_zs"] is not None:
+                    with open(gen_zs_path, "wb") as f:
+                        pickle.dump(result["gen_zs"], f)
 
-            avg_vattn = (
-                result["gen_vattn"].mean().item()
-                if result["gen_vattn"] is not None
-                else 0.0
-            )
+                tokens = {
+                    "prompt_text": processor.decode(result["prompt_tokens"]),
+                    "gen_text": processor.decode(result["gen_tokens"]),
+                    "prompt_tokens": processor.batch_decode(result["prompt_tokens"]),
+                    "gen_tokens": processor.batch_decode(result["gen_tokens"]),
+                }
+                tokens_path = os.path.join(output_dir, "pkls", f"{idx}_tokens.json")
+                with open(tokens_path, "w", encoding="utf-8") as f:
+                    json.dump(tokens, f, ensure_ascii=False, indent=2)
 
-            meta = {
-                "idx": idx,
-                "sample_id": sample_id,
-                "image_path": sample.get("image_path", sample.get("image", "")),
-                "ground_truth": sample.get("answer", ""),
-                "predicted_answer": result["predicted_answer"],
-                "correct": result["correct"],
-                "prompt_token_num": result["prompt_token_num"],
-                "gen_token_num": result["gen_token_num"],
-                "avg_vattn": avg_vattn,
-                "gen_entropy_path": gen_entropy_path,
-                "gen_vattn_path": gen_vattn_path,
-                "gen_zs_path": gen_zs_path,
-                "use_context_aware": use_context_aware,
-                "use_attention_guidance": use_attention_guidance,
-                "dla_entropy_threshold": dla_entropy_threshold,
-            }
+                avg_vattn = result["gen_vattn"].mean().item() if result["gen_vattn"] is not None else 0.0
 
-            meta_path = os.path.join(output_dir, f"{sample_id}_meta.json")
-            with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump(meta, f, ensure_ascii=False, indent=2)
-
-            results.append(
-                {
+                meta = {
                     "idx": idx,
                     "sample_id": sample_id,
-                    "meta_path": meta_path,
+                    "image_path": sample.get("image_path", sample.get("image", "")),
+                    "ground_truth": sample.get("answer", ""),
+                    "predicted_answer": result["predicted_answer"],
+                    "correct": result["correct"],
+                    "prompt_token_num": result["prompt_token_num"],
+                    "gen_token_num": result["gen_token_num"],
+                    "avg_vattn": avg_vattn,
+                    "gen_entropy_path": gen_entropy_path,
+                    "gen_vattn_path": gen_vattn_path,
+                    "gen_zs_path": gen_zs_path,
+                    "tokens_path": tokens_path,
+                    "use_context_aware": use_context_aware,
+                    "use_attention_guidance": use_attention_guidance,
+                    "dla_entropy_threshold": dla_entropy_threshold,
                 }
-            )
 
-            log_print(
-                f"[{sample_id}] pred={result['predicted_answer']} | gt={sample.get('answer', '')} | correct={result['correct']} | vattn={avg_vattn:.3f}"
-            )
+                meta_path = os.path.join(output_dir, f"{sample_id}_meta.json")
+                with open(meta_path, "w", encoding="utf-8") as f:
+                    json.dump(meta, f, ensure_ascii=False, indent=2)
+
+                results.append({"idx": idx, "sample_id": sample_id, "meta_path": meta_path})
+
+                log_print(
+                    f"[{sample_id}] pred={result['predicted_answer']} | gt={sample.get('answer', '')} | correct={result['correct']} | vattn={avg_vattn:.3f}"
+                )
 
         except Exception as e:
-            errors.append({"idx": idx, "error": str(e)})
-            log_print(f"Error at idx {idx}: {e}")
+            for idx in batch_indices:
+                errors.append({"idx": idx, "error": str(e)})
+                log_print(f"Error at batch idx {idx}: {e}")
             import traceback
-
             traceback.print_exc()
 
     index_path = os.path.join(output_dir, "index.json")
@@ -700,8 +662,7 @@ def main():
         "--dataset",
         type=str,
         default="VisuRiddles",
-        choices=SUPPORTED_DATASETS,
-        help="Dataset name",
+        help="Dataset name(s), comma-separated (e.g., 'VisuRiddles,RAVEN,MARVEL')",
     )
     parser.add_argument(
         "--num_samples", type=int, default=100, help="Number of samples (-1 for all)"
@@ -746,6 +707,11 @@ def main():
         help="DLA only applied when entropy > threshold",
     )
 
+    # Batch processing
+    parser.add_argument(
+        "--batch_size", type=int, default=1, help="Batch size for inference (default: 1)"
+    )
+
     # Output
     parser.add_argument("--output_dir", type=str, default="results")
     parser.add_argument(
@@ -759,66 +725,72 @@ def main():
     use_attention_guidance = args.use_attention_guidance.lower() == "true"
     shuffle = args.shuffle.lower() == "true"
 
-    output_dir = os.path.join(args.output_dir, args.exp_name, args.dataset)
-    os.makedirs(output_dir, exist_ok=True)
+    datasets = [d.strip() for d in args.dataset.split(",")]
+    log_print(f"Datasets: {datasets}")
 
-    config = {
-        "exp_name": args.exp_name,
-        "dataset": args.dataset,
-        "model_name": args.model_path.split("/")[-1],
-        "model_path": args.model_path,
-        "num_samples": args.num_samples,
-        "shuffle": shuffle,
-        "seed": args.seed,
-        "max_new_tokens": args.max_new_tokens,
-        "temperature": args.temperature,
-        "top_p": args.top_p,
-        "top_k": args.top_k,
-        "do_sample": do_sample,
-        "use_context_aware": use_context_aware,
-        "ctx_entropy_threshold": args.ctx_entropy_threshold,
-        "ctx_top_heads": args.ctx_top_heads,
-        "use_attention_guidance": use_attention_guidance,
-        "dla_entropy_threshold": args.dla_entropy_threshold,
-        "prompt_template": args.prompt_template,
-    }
-    config_path = os.path.join(output_dir, "exp_config.json")
-    with open(config_path, "w") as f:
-        json.dump(config, f, indent=2)
-    log_print(f"Config saved to: {config_path}")
+    for dataset_name in datasets:
+        output_dir = os.path.join(args.output_dir, args.exp_name, dataset_name)
+        os.makedirs(output_dir, exist_ok=True)
 
-    dataset = load_dataset(args.dataset)
-    if args.num_samples == -1:
-        end_idx = len(dataset)
-    else:
-        end_idx = min(args.num_samples, len(dataset))
-    sample_indices = list(range(0, end_idx))
+        config = {
+            "exp_name": args.exp_name,
+            "dataset": dataset_name,
+            "model_name": args.model_path.split("/")[-1],
+            "model_path": args.model_path,
+            "num_samples": args.num_samples,
+            "shuffle": shuffle,
+            "seed": args.seed,
+            "max_new_tokens": args.max_new_tokens,
+            "temperature": args.temperature,
+            "top_p": args.top_p,
+            "top_k": args.top_k,
+            "do_sample": do_sample,
+            "use_context_aware": use_context_aware,
+            "ctx_entropy_threshold": args.ctx_entropy_threshold,
+            "ctx_top_heads": args.ctx_top_heads,
+            "use_attention_guidance": use_attention_guidance,
+            "dla_entropy_threshold": args.dla_entropy_threshold,
+            "batch_size": args.batch_size,
+            "prompt_template": args.prompt_template,
+        }
+        config_path = os.path.join(output_dir, "exp_config.json")
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2)
+        log_print(f"Config saved to: {config_path}")
 
-    log_print(f"Starting inference: {len(sample_indices)} samples")
-    log_print(f"Model: {args.model_path}")
-    log_print(
-        f"Context-Aware: {use_context_aware}, Attention-Guidance: {use_attention_guidance}"
-    )
+        dataset = load_dataset(dataset_name)
+        if args.num_samples == -1:
+            end_idx = len(dataset)
+        else:
+            end_idx = min(args.num_samples, len(dataset))
+        sample_indices = list(range(0, end_idx))
 
-    run_inference(
-        model_path=args.model_path,
-        dataset_name=args.dataset,
-        sample_indices=sample_indices,
-        output_dir=output_dir,
-        max_new_tokens=args.max_new_tokens,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        top_k=args.top_k,
-        do_sample=do_sample,
-        use_context_aware=use_context_aware,
-        ctx_entropy_threshold=args.ctx_entropy_threshold,
-        ctx_top_heads=args.ctx_top_heads,
-        use_attention_guidance=use_attention_guidance,
-        dla_entropy_threshold=args.dla_entropy_threshold,
-        prompt_template=args.prompt_template,
-        shuffle=shuffle,
-        seed=args.seed,
-    )
+        log_print(f"Starting inference: {len(sample_indices)} samples, batch_size={args.batch_size}")
+        log_print(f"Model: {args.model_path}")
+        log_print(
+            f"Context-Aware: {use_context_aware}, Attention-Guidance: {use_attention_guidance}"
+        )
+
+        run_inference(
+            model_path=args.model_path,
+            dataset_name=dataset_name,
+            sample_indices=sample_indices,
+            output_dir=output_dir,
+            max_new_tokens=args.max_new_tokens,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            top_k=args.top_k,
+            do_sample=do_sample,
+            use_context_aware=use_context_aware,
+            ctx_entropy_threshold=args.ctx_entropy_threshold,
+            ctx_top_heads=args.ctx_top_heads,
+            use_attention_guidance=use_attention_guidance,
+            dla_entropy_threshold=args.dla_entropy_threshold,
+            prompt_template=args.prompt_template,
+            shuffle=shuffle,
+            seed=args.seed,
+            batch_size=args.batch_size,
+        )
 
 
 if __name__ == "__main__":
