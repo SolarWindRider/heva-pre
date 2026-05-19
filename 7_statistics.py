@@ -2536,7 +2536,7 @@ def compare_experiments(
 
 
 if __name__ == "__main__":
-    exp = "./results/exp022"
+    exp = "./results/exp021"
     print(exp)
     calculate_acc(exp)
     analyze_answer_proportion(exp)

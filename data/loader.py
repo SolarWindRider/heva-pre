@@ -233,12 +233,15 @@ def preprocess_multimodal_dataset(bench: str) -> List[Dict]:
             image = item["image"]
             if isinstance(image, dict) and "bytes" in image:
                 image = Image.open(io.BytesIO(image["bytes"])).convert("RGB")
+            answer_idx = int(item["answer"])
+            options = item["options"]
+            answer_text = options[answer_idx] if isinstance(options, list) and 0 <= answer_idx < len(options) else str(answer_idx)
             ds.append(
                 {
                     "image": image,
                     "question": item["question"],
-                    "option": format_mcq_options(item["options"]),
-                    "answer": item["answer"].upper(),
+                    "option": format_mcq_options(options),
+                    "answer": answer_text,
                     "answer_format": "mcq",
                     "id": str(item.get("id", len(ds))),
                     "issudoku": False,
@@ -263,24 +266,6 @@ def preprocess_multimodal_dataset(bench: str) -> List[Dict]:
                     "answer": item["answer"].upper() if isinstance(item["answer"], str) else str(item["answer"]),
                     "answer_format": "mcq",
                     "id": str(item.get("id", len(ds))),
-                    "issudoku": False,
-                }
-            )
-        return ds
-
-    elif bench == "VQAv2":
-        dsjson = json.load(open(f"{DATA_ROOT}/VQAv2/vqav2_val.json"))
-        image_base = f"{DATA_ROOT}/VQAv2/images"
-        ds = []
-        for example in dsjson:
-            ds.append(
-                {
-                    "image_path": os.path.join(image_base, f"{example['image_id']}.jpg"),
-                    "question": example["question"],
-                    "option": "",
-                    "answer": example["multiple_choice_answer"],
-                    "answer_format": "open_vqa",
-                    "id": str(example["question_id"]),
                     "issudoku": False,
                 }
             )
@@ -479,8 +464,6 @@ def load_dataset(bench: str = "VisuRiddles") -> AVGDataset:
         base_path = f"{DATA_ROOT}/AI2D"
     elif bench == "RealWorldQA":
         base_path = f"{DATA_ROOT}/RealWorldQA/images"
-    elif bench == "VQAv2":
-        base_path = f"{DATA_ROOT}/VQAv2/images"
     elif bench == "GQA":
         base_path = f"{DATA_ROOT}/GQA/images"
     elif bench == "MMMU":
@@ -503,7 +486,6 @@ SUPPORTED_DATASETS = [
     "AlgoPuzzleVQA",
     "AI2D",
     "RealWorldQA",
-    "VQAv2",
     "GQA",
     "MMMU",
     "MathVista",
