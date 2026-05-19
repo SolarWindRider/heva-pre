@@ -2536,7 +2536,8 @@ def compare_experiments(
 
 
 if __name__ == "__main__":
-    exp = "./results/exp027"
+    exp = "./results/exp022"
+    print(exp)
     calculate_acc(exp)
     analyze_answer_proportion(exp)
     analyze_vattn_distribution(exp)

@@ -225,41 +225,47 @@ def preprocess_multimodal_dataset(bench: str) -> List[Dict]:
         return ds
 
     elif bench == "AI2D":
-        image_base = f"{DATA_ROOT}/AI2D/images"
+        from datasets import load_dataset
+        import io
+        hf_ds = load_dataset(f"{DATA_ROOT}/AI2D", split="test")
         ds = []
-        with open(f"{DATA_ROOT}/AI2D/test.csv", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for example in reader:
-                ds.append(
-                    {
-                        "image_path": os.path.join(image_base, example["image"]),
-                        "question": example["question"],
-                        "option": format_mcq_options(example["options"]),
-                        "answer": example["answer"].upper(),
-                        "answer_format": "mcq",
-                        "id": example["id"],
-                        "issudoku": False,
-                    }
-                )
+        for item in hf_ds:
+            image = item["image"]
+            if isinstance(image, dict) and "bytes" in image:
+                image = Image.open(io.BytesIO(image["bytes"])).convert("RGB")
+            ds.append(
+                {
+                    "image": image,
+                    "question": item["question"],
+                    "option": format_mcq_options(item["options"]),
+                    "answer": item["answer"].upper(),
+                    "answer_format": "mcq",
+                    "id": str(item.get("id", len(ds))),
+                    "issudoku": False,
+                }
+            )
         return ds
 
     elif bench == "RealWorldQA":
-        image_base = f"{DATA_ROOT}/RealWorldQA/images"
+        from datasets import load_dataset
+        import io
+        hf_ds = load_dataset(f"{DATA_ROOT}/RealWorldQA", split="test")
         ds = []
-        with open(f"{DATA_ROOT}/RealWorldQA/data.tsv", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f, delimiter="\t")
-            for example in reader:
-                ds.append(
-                    {
-                        "image_path": os.path.join(image_base, example.get("image", example.get("image_path", ""))),
-                        "question": example["question"],
-                        "option": f"A. {example['A']} B. {example['B']} C. {example['C']} D. {example['D']}",
-                        "answer": example["answer"].upper(),
-                        "answer_format": "mcq",
-                        "id": example["index"],
-                        "issudoku": False,
-                    }
-                )
+        for item in hf_ds:
+            image = item["image"]
+            if isinstance(image, dict) and "bytes" in image:
+                image = Image.open(io.BytesIO(image["bytes"])).convert("RGB")
+            ds.append(
+                {
+                    "image": image,
+                    "question": item["question"],
+                    "option": "",
+                    "answer": item["answer"].upper() if isinstance(item["answer"], str) else str(item["answer"]),
+                    "answer_format": "mcq",
+                    "id": str(item.get("id", len(ds))),
+                    "issudoku": False,
+                }
+            )
         return ds
 
     elif bench == "VQAv2":
@@ -281,18 +287,34 @@ def preprocess_multimodal_dataset(bench: str) -> List[Dict]:
         return ds
 
     elif bench == "GQA":
-        dsjson = json.load(open(f"{DATA_ROOT}/GQA/test.json"))
-        image_base = f"{DATA_ROOT}/GQA/images"
+        from datasets import load_dataset
+        import io
+
+        gqa_base = f"{DATA_ROOT}/GQA/lmms-lab___gqa"
+
+        images_path = f"{gqa_base}/testdev_balanced_images/0.0.0"
+        images_ds = load_dataset(images_path, split="train")
+        images_dict = {item["id"]: item["image"] for item in images_ds}
+
+        instr_path = f"{gqa_base}/testdev_balanced_instructions/0.0.0"
+        instr_ds = load_dataset(instr_path, split="train")
+
         ds = []
-        for item_id, example in dsjson.items():
+        for item in instr_ds:
+            image_id = item.get("imageId")
+            if image_id not in images_dict:
+                continue
+            image = images_dict[image_id]
+            if isinstance(image, dict) and "bytes" in image:
+                image = Image.open(io.BytesIO(image["bytes"])).convert("RGB")
             ds.append(
                 {
-                    "image_path": os.path.join(image_base, f"{example['image_id']}.jpg"),
-                    "question": example["question"],
-                    "option": format_mcq_options(example.get("options", {})),
-                    "answer": example["answer"].upper(),
+                    "image": image,
+                    "question": item["question"],
+                    "option": format_mcq_options(item.get("options", {})),
+                    "answer": item["answer"].upper() if isinstance(item["answer"], str) else str(item["answer"]),
                     "answer_format": "mcq",
-                    "id": item_id,
+                    "id": item["id"],
                     "issudoku": False,
                 }
             )
@@ -340,13 +362,46 @@ def preprocess_multimodal_dataset(bench: str) -> List[Dict]:
         return data_list
 
     elif bench == "MathVista":
+        from datasets import load_dataset
+        import io
+
+        hf_ds = load_dataset(f"{DATA_ROOT}/MathVista", split="test")
+        data_list = []
+        for item in hf_ds:
+            choices = item.get("choices")
+            di = item.get("decoded_image")
+            image = None
+            if isinstance(di, dict) and "bytes" in di:
+                try:
+                    image = Image.open(io.BytesIO(di["bytes"])).convert("RGB")
+                except:
+                    pass
+            data_list.append(
+                {
+                    "image": image,
+                    "question": item["question"],
+                    "option": format_mcq_options(choices) if choices else "",
+                    "answer": str(item["answer"]),
+                    "answer_format": "mcq" if choices else "open_vqa",
+                    "id": str(item["pid"]),
+                    "issudoku": False,
+                }
+            )
+        return data_list
+
+    elif bench == "MathVision":
         import pyarrow.parquet as pq
         import io
-        tbl = pq.read_table("/data2/lixiang/datas/MathVista/data/testmini-00000-of-00001-725687bf7a18d64b.parquet", use_threads=False)
+        import glob
+
+        parquet_files = glob.glob(f"{DATA_ROOT}/MathVision/data/*.parquet")
+        if not parquet_files:
+            raise FileNotFoundError(f"No parquet files found in {DATA_ROOT}/MathVision/data/")
+        tbl = pq.read_table(parquet_files[0], use_threads=False)
         d = tbl.to_pydict()
         data_list = []
         for i in range(tbl.num_rows):
-            choices = d["choices"][i]
+            choices = d["options"][i]
             di = d["decoded_image"][i]
             image = None
             if isinstance(di, dict) and "bytes" in di:
@@ -361,38 +416,11 @@ def preprocess_multimodal_dataset(bench: str) -> List[Dict]:
                     "option": format_mcq_options(choices) if choices else "",
                     "answer": str(d["answer"][i]),
                     "answer_format": "mcq" if choices else "open_vqa",
-                    "id": str(d["pid"][i]),
+                    "id": str(d["id"][i]),
                     "issudoku": False,
                 }
             )
         return data_list
-
-    elif bench == "MathVision":
-        from datasets import load_dataset
-        import io
-        ds = load_dataset("/data2/lixiang/datas/MathVision/data", split="test")
-        data_list = []
-        for i, item in enumerate(ds):
-            choices = item.get("choices")
-            opts = format_mcq_options(choices) if choices else ""
-            di = item["decoded_image"]
-            image = None
-            if isinstance(di, dict) and "bytes" in di:
-                try:
-                    image = Image.open(io.BytesIO(di["bytes"])).convert("RGB")
-                except:
-                    pass
-            data_list.append(
-                {
-                    "image": image,
-                    "question": item["question"],
-                    "option": opts,
-                    "answer": str(item["answer"]),
-                    "answer_format": "mcq" if choices else "open_vqa",
-                    "id": str(item["id"]),
-                    "issudoku": False,
-                }
-            )
         return data_list
 
     elif bench == "MMMU":

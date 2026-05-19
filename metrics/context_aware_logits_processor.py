@@ -236,11 +236,7 @@ class ContextAwareLogitsProcessor(LogitsProcessor):
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
         """
         Select token based on context-head support when uncertain.
-
-        Flow:
-        1. top-k filtering on raw scores (same as TopKLogitsWarper)
-        2. In final candidates, select top half with highest context support
-        3. Return new scores tensor with kept tokens, others set to -inf
+        Applies context-aware selection for each sample in batch.
 
         Args:
             input_ids: (batch, seq_len) - current input sequence
@@ -249,47 +245,39 @@ class ContextAwareLogitsProcessor(LogitsProcessor):
         Returns:
             modified scores biased toward context-supported tokens
         """
-        # 1. Compute entropy
-        entropy = compute_entropy(scores)  # (batch,)
+        entropy = compute_entropy(scores)
+        batch_size = scores.shape[0]
 
-        # If model is confident (low entropy), don't intervene
-        if entropy[0] < self.entropy_threshold:
-            return scores
-
-        # 2. Get context heads from cached attentions
+        ctx_token_indices = self._context_token_indices
         context_heads = self._get_context_heads()
         if not context_heads:
             return scores
 
-        # Check if context range is valid (visual tokens exist)
-        ctx_start = self._context_token_indices[0][0].item()
-        ctx_end = self._context_token_indices[1][0].item()
-        if ctx_end <= ctx_start:
-            # No valid context tokens detected, don't干预
-            return scores
+        for b in range(batch_size):
+            if entropy[b] < self.entropy_threshold:
+                continue
 
-        # 4. Top-k filtering: keep top-k, mask rest to -inf
-        k = min(self.top_k, scores.shape[-1])
-        _, topk_ids = torch.topk(scores[0], k=k)  # (k,)
+            ctx_start = ctx_token_indices[0][b].item()
+            ctx_end = ctx_token_indices[1][b].item()
+            if ctx_end <= ctx_start:
+                continue
 
-        # 5. In the top-k candidates, select top half with highest context support
-        supports = self._compute_support(topk_ids)  # (k,)
-        keep_count = max(1, k // 2)  # 保留 topk 的一半
+            k = min(self.top_k, scores.shape[-1])
+            _, topk_ids = torch.topk(scores[b], k=k)
 
-        # Get the support value at the boundary
-        sorted_supports, _ = torch.sort(supports, descending=True)
-        threshold = sorted_supports[keep_count - 1].item()  # support 阈值
+            supports = self._compute_support(topk_ids)
+            keep_count = max(1, k // 2)
 
-        # Build a mask for topk positions: True if support >= threshold
-        keep_mask = (supports >= threshold)  # (k,)
+            sorted_supports, _ = torch.sort(supports, descending=True)
+            threshold = sorted_supports[keep_count - 1].item()
 
-        # Create a mask for all vocabulary: True = set to -inf
-        drop_mask = torch.ones(scores.shape[-1], dtype=torch.bool, device=scores.device)
-        drop_mask[topk_ids] = False  # topk tokens: don't drop
-        drop_mask[topk_ids[~keep_mask]] = True  # bottom half of topk: drop
+            keep_mask = (supports >= threshold)
 
-        # Set dropped tokens to -inf (in-place)
-        scores[0, drop_mask] = -float("inf")
+            drop_mask = torch.ones(scores.shape[-1], dtype=torch.bool, device=scores.device)
+            drop_mask[topk_ids] = False
+            drop_mask[topk_ids[~keep_mask]] = True
+
+            scores[b, drop_mask] = -float("inf")
 
         return scores
 

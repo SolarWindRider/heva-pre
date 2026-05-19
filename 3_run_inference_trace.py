@@ -355,9 +355,13 @@ def generate_with_attention_guidance(
     batch_attention_mask_list = []
     for inp in all_inputs:
         pad_len = max_prompt_len - inp["input_ids"].shape[1]
+        # Left-padding is REQUIRED for batched causal LM generation.
+        # Right-padding uses padding-position hidden states for next-token
+        # prediction (logits[:, -1, :]), producing corrupted/shorter-sequence output.
+        pad_token_id = processor.tokenizer.pad_token_id or 0
         if pad_len > 0:
-            batch_input_ids_list.append(torch.cat([inp["input_ids"], torch.zeros(1, pad_len, dtype=inp["input_ids"].dtype)], dim=1))
-            batch_attention_mask_list.append(torch.cat([inp["attention_mask"], torch.zeros(1, pad_len, dtype=inp["attention_mask"].dtype)], dim=1))
+            batch_input_ids_list.append(torch.cat([torch.full((1, pad_len), pad_token_id, dtype=inp["input_ids"].dtype), inp["input_ids"]], dim=1))
+            batch_attention_mask_list.append(torch.cat([torch.zeros(1, pad_len, dtype=inp["attention_mask"].dtype), inp["attention_mask"]], dim=1))
         else:
             batch_input_ids_list.append(inp["input_ids"])
             batch_attention_mask_list.append(inp["attention_mask"])
@@ -366,7 +370,11 @@ def generate_with_attention_guidance(
     batch_attention_mask = torch.cat(batch_attention_mask_list, dim=0).to(model.device)
     prompt_token_num = max_prompt_len
 
-    visual_indices_list = [get_visual_token_indices(inp["input_ids"], processor=processor) for inp in all_inputs]
+    all_pixel_values = [inp["pixel_values"] for inp in all_inputs]
+    all_image_grid_thw = torch.cat([inp["image_grid_thw"] for inp in all_inputs], dim=0).to(model.device)
+    batch_pixel_values = torch.cat(all_pixel_values, dim=0).to(model.device)
+
+    visual_indices_list = [get_visual_token_indices(batch_input_ids[i:i+1], processor=processor) for i in range(len(all_inputs))]
     visual_start = torch.stack([v[0] for v in visual_indices_list])
     visual_end = torch.stack([v[1] for v in visual_indices_list])
     model.visual_token_indices = (visual_start, visual_end)
@@ -407,6 +415,8 @@ def generate_with_attention_guidance(
         outputs = model.generate(
             input_ids=batch_input_ids,
             attention_mask=batch_attention_mask,
+            pixel_values=batch_pixel_values,
+            image_grid_thw=all_image_grid_thw,
             return_dict_in_generate=True,
             output_logits=True,
             output_attentions=True,
@@ -507,10 +517,9 @@ def run_inference(
     model = Qwen3VLForConditionalGeneration.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
-        device_map="auto",
         attn_implementation="eager",
         trust_remote_code=True,
-    )
+    ).cuda()
     model.eval()
 
     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)

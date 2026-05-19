@@ -299,9 +299,12 @@ def _sample_with_vattn_and_entropy(
         # pre-process distribution
         next_token_scores = logits_processor(input_ids, next_token_logits)
 
-        # [NEW] Attention-guided token selection via DLA trace
-        # Mirrors the reference code: compute backward causal path for each candidate,
+        # Attention-guided token selection via DLA trace
+        # Compute backward causal path for each candidate,
         # verify if its attention focuses on critical_indices, then resample from survivors.
+        batch_size = next_token_logits.shape[0]
+        has_attn_guidance_override = torch.zeros(batch_size, dtype=torch.bool, device=next_token_logits.device)
+
         if (
             getattr(self, "use_attention_guidance", False)
             and self.gen_zs
@@ -313,17 +316,20 @@ def _sample_with_vattn_and_entropy(
                 top_k_attn = getattr(self, "attn_guidance_topk_attn", 5)
                 dla_entropy_threshold = getattr(self, "dla_entropy_threshold", None)
 
-                # Only run DLA path computation for high-entropy tokens
                 all_zs_current = self.gen_zs[-1]
                 if all_zs_current is None:
-                    has_attn_guidance_override = False
-                elif dla_entropy_threshold is not None:
-                    step_entropy = get_entropy(next_token_logits[0]).item()
-                    if step_entropy < dla_entropy_threshold:
-                        has_attn_guidance_override = False
-                    else:
+                    has_attn_guidance_override = torch.zeros(batch_size, dtype=torch.bool, device=next_token_logits.device)
+                else:
+                    for b in range(batch_size):
+                        if dla_entropy_threshold is not None:
+                            step_entropy = get_entropy(next_token_logits[b:b+1]).item()
+                            if step_entropy < dla_entropy_threshold:
+                                continue
+                        else:
+                            step_entropy = None
+
                         _, top_indices = torch.topk(
-                            next_token_scores,
+                            next_token_scores[b:b+1],
                             k=min(top_k_vocab, next_token_scores.shape[-1]),
                         )
                         top_indices = top_indices[0]
@@ -332,67 +338,32 @@ def _sample_with_vattn_and_entropy(
                         for i in range(len(top_indices)):
                             tok_id = top_indices[i].item()
                             path, _ = compute_dla_path_for_token(
-                                all_zs_current, self, tok_id, b=0
+                                all_zs_current, self, tok_id, b=b
                             )
                             is_valid = verify_attention_focus_on_path(
                                 outputs.attentions,
                                 path,
                                 critical_indices,
-                                b=0,
+                                b=b,
                                 top_k_attn=top_k_attn,
                             )
                             if is_valid:
                                 valid_candidates.append(tok_id)
-                                valid_logits.append(next_token_scores[0, tok_id].item())
+                                valid_logits.append(next_token_scores[b, tok_id].item())
                         if valid_candidates:
                             valid_logits_tensor = torch.tensor(
-                                valid_logits, device=next_token_scores.device
+                                valid_logits, device=next_token_logits.device
                             )
                             normalized_probs = F.softmax(valid_logits_tensor, dim=-1)
-                            next_tokens = torch.multinomial(
+                            next_tokens_single = torch.multinomial(
                                 normalized_probs, num_samples=1
                             ).squeeze(1)
-                            has_attn_guidance_override = True
-                        else:
-                            has_attn_guidance_override = False
-                else:
-                    _, top_indices = torch.topk(
-                        next_token_scores,
-                        k=min(top_k_vocab, next_token_scores.shape[-1]),
-                    )
-                    top_indices = top_indices[0]
-                    valid_candidates = []
-                    valid_logits = []
-                    for i in range(len(top_indices)):
-                        tok_id = top_indices[i].item()
-                        path, _ = compute_dla_path_for_token(
-                            all_zs_current, self, tok_id, b=0
-                        )
-                        is_valid = verify_attention_focus_on_path(
-                            outputs.attentions,
-                            path,
-                            critical_indices,
-                            b=0,
-                            top_k_attn=top_k_attn,
-                        )
-                        if is_valid:
-                            valid_candidates.append(tok_id)
-                            valid_logits.append(next_token_scores[0, tok_id].item())
-                    if valid_candidates:
-                        valid_logits_tensor = torch.tensor(
-                            valid_logits, device=next_token_scores.device
-                        )
-                        normalized_probs = F.softmax(valid_logits_tensor, dim=-1)
-                        next_tokens = torch.multinomial(
-                            normalized_probs, num_samples=1
-                        ).squeeze(1)
-                        has_attn_guidance_override = True
-                    else:
-                        has_attn_guidance_override = False
+                            next_tokens[b] = next_tokens_single
+                            has_attn_guidance_override[b] = True
             else:
-                has_attn_guidance_override = False
+                has_attn_guidance_override = torch.zeros(batch_size, dtype=torch.bool, device=next_token_logits.device)
         else:
-            has_attn_guidance_override = False
+            has_attn_guidance_override = torch.zeros(batch_size, dtype=torch.bool, device=next_token_logits.device)
 
         gen_entropy = get_entropy(next_token_logits)
         gen_vattn = get_vattn(
@@ -426,7 +397,7 @@ def _sample_with_vattn_and_entropy(
                 )
 
         # token selection
-        if has_attn_guidance_override:
+        if has_attn_guidance_override.any():
             pass  # next_tokens already set in attention-guided block above
         elif do_sample:
             probs = nn.functional.softmax(next_token_scores, dim=-1)
