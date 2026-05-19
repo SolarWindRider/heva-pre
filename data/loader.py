@@ -446,82 +446,7 @@ def preprocess_multimodal_dataset(bench: str) -> List[Dict]:
                     )
         return data_list
 
-    elif bench == "MMMU_Pro":
-        import pyarrow.parquet as pq
-        import io
-        base_dir = "/data2/lixiang/datas/MMMU_Pro"
-        data_list = []
-        for root, dirs, files in os.walk(base_dir):
-            for f in files:
-                if not f.endswith(".parquet") or "lock" in f or "incomplete" in f:
-                    continue
-                path = os.path.join(root, f)
-                try:
-                    tbl = pq.read_table(path, use_threads=False)
-                except Exception:
-                    continue
-                d = tbl.to_pydict()
-                cols = set(d.keys())
-                for i in range(tbl.num_rows):
-                    if "question" in cols:
-                        # standard format: has image_1 to image_7
-                        opts = d.get("options")
-                        opts_val = opts[i] if opts else None
-                        image = None
-                        for img_key in [f"image_{j}" for j in range(1, 8)]:
-                            img_data = d.get(img_key, [None])[i]
-                            if img_data and isinstance(img_data, dict) and "bytes" in img_data:
-                                try:
-                                    image = Image.open(io.BytesIO(img_data["bytes"])).convert("RGB")
-                                    break
-                                except:
-                                    continue
-                        data_list.append(
-                            {
-                                "image": image,
-                                "question": d["question"][i],
-                                "option": format_mcq_options(opts_val) if opts_val else "",
-                                "answer": str(d["answer"][i]).upper(),
-                                "answer_format": "mcq",
-                                "id": str(d.get("id", [i])[i]),
-                                "issudoku": False,
-                            }
-                        )
-                    elif "image" in cols:
-                        # vision format: has decoded image bytes
-                        img_data = d["image"][i]
-                        image = None
-                        if isinstance(img_data, dict) and "bytes" in img_data:
-                            try:
-                                image = Image.open(io.BytesIO(img_data["bytes"])).convert("RGB")
-                            except:
-                                pass
-                        opts = d.get("options")
-                        opts_val = opts[i] if opts else None
-                        data_list.append(
-                            {
-                                "image": image,
-                                "question": d.get("question", [""])[i] if "question" in d else "",
-                                "option": format_mcq_options(opts_val) if opts_val else "",
-                                "answer": str(d["answer"][i]).upper(),
-                                "answer_format": "mcq",
-                                "id": str(d.get("id", [i])[i]),
-                                "issudoku": False,
-                            }
-                        )
-        return data_list
-
-    elif bench == "qwen3_vl_math":
-        # qwen3-vl-math not yet downloaded
-        print("Warning: qwen3_vl_math has no local data (download needed)")
-        return []
-
-    elif bench == "zerobench":
-        # zerobench images not yet downloaded (only metadata cache exists)
-        print("Warning: zerobench has no local data (download needed)")
-        return []
-
-    else:
+    elif bench == "MathVista":
         raise ValueError(f"Unknown dataset: {bench}")
 
 
@@ -560,9 +485,7 @@ def load_dataset(bench: str = "VisuRiddles") -> AVGDataset:
         base_path = f"{DATA_ROOT}/GQA/images"
     elif bench == "MMMU":
         base_path = f"{DATA_ROOT}/MMMU"
-    elif bench == "MMMU_Pro":
-        base_path = f"{DATA_ROOT}/MMMU_Pro"
-    elif bench in ("MathVista", "MathVision", "zerobench", "qwen3_vl_math"):
+    elif bench in ("MathVista", "MathVision"):
         base_path = DATA_ROOT
     else:
         base_path = DATA_ROOT
@@ -585,9 +508,6 @@ SUPPORTED_DATASETS = [
     "MMMU",
     "MathVista",
     "MathVision",
-    "MMMU_Pro",
-    "zerobench",
-    "qwen3_vl_math",
 ]
 
 
