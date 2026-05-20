@@ -350,15 +350,18 @@ def _sample_with_vattn_and_entropy(
                             if is_valid:
                                 valid_candidates.append(tok_id)
                                 valid_logits.append(next_token_scores[b, tok_id].item())
-                        if valid_candidates:
+                        if len(valid_candidates) == 1:
+                            next_tokens[b] = valid_candidates[0]
+                        elif len(valid_candidates) > 1:
                             valid_logits_tensor = torch.tensor(
                                 valid_logits, device=next_token_logits.device
                             )
                             normalized_probs = F.softmax(valid_logits_tensor, dim=-1)
-                            next_tokens_single = torch.multinomial(
-                                normalized_probs, num_samples=1
-                            ).squeeze(1)
-                            next_tokens[b] = next_tokens_single
+                            if normalized_probs.numel() == 1:
+                                next_tokens[b] = valid_candidates[0]
+                            else:
+                                best_idx = torch.argmax(normalized_probs, dim=-1).item()
+                                next_tokens[b] = valid_candidates[best_idx]
                             has_attn_guidance_override[b] = True
             else:
                 has_attn_guidance_override = torch.zeros(batch_size, dtype=torch.bool, device=next_token_logits.device)
