@@ -76,7 +76,7 @@ def build_prompt(
     option_str = f"option: {sample['options']}\n" if sample.get("options") else ""
 
     if prompt_template is None:
-        prompt_template = '{question}{options}Think carefully and write the answer into a JSON form\n```json\n{{"answer": "X"}}```'
+        prompt_template = '{question}  {options} \nThink carefully and write the answer into a JSON form\n```json\n{{"answer": "X"}}```'
 
     full_question = prompt_template.format(
         question=sample["question"], options=option_str
