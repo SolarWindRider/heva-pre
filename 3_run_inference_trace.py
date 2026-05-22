@@ -677,6 +677,13 @@ def main():
         "--num_samples", type=int, default=100, help="Number of samples (-1 for all)"
     )
     parser.add_argument(
+        "--resume",
+        type=str,
+        default="false",
+        choices=["true", "false"],
+        help="Resume from existing results: skip samples that already have meta.json",
+    )
+    parser.add_argument(
         "--shuffle", type=str, default="false", choices=["true", "false"]
     )
     parser.add_argument("--seed", type=int, default=42)
@@ -773,6 +780,29 @@ def main():
         else:
             end_idx = min(args.num_samples, len(dataset))
         sample_indices = list(range(0, end_idx))
+
+        if args.resume.lower() == "true":
+            existing = set()
+            if os.path.isdir(output_dir):
+                for f in os.listdir(output_dir):
+                    if f.endswith("_meta.json"):
+                        sid = f.replace("_meta.json", "")
+                        sid = sid.replace("/", "_").replace("\\", "_").replace(":", "_")
+                        existing.add(sid)
+            completed = 0
+            skipped = 0
+            remaining = []
+            for idx in sample_indices:
+                ds_item = dataset[idx]
+                sid = str(ds_item.get("id", idx))
+                sid = sid.replace("/", "_").replace("\\", "_").replace(":", "_")
+                if sid in existing:
+                    completed += 1
+                    skipped += 1
+                else:
+                    remaining.append(idx)
+            sample_indices = remaining
+            log_print(f"Resume: {completed} samples already done, {skipped} skipped, {len(sample_indices)} to run")
 
         log_print(f"Starting inference: {len(sample_indices)} samples, batch_size={args.batch_size}")
         log_print(f"Model: {args.model_path}")

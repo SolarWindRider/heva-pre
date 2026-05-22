@@ -2536,11 +2536,13 @@ def compare_experiments(
 
 
 if __name__ == "__main__":
-    exp = "./results/exp021"
-    print(exp)
-    calculate_acc(exp)
-    analyze_answer_proportion(exp)
-    analyze_vattn_distribution(exp)
+    exps = ["./results/exp021", "./results/exp022", "./results/exp023", "./results/exp024", "./results/exp025", "./results/exp026", "./results/exp027", "./results/exp028", "./results/exp02v1", "./results/exp02v2",]
+    for exp in exps:
+        print("========================================")
+        print(exp)
+        calculate_acc(exp)
+    #    analyze_answer_proportion(exp)
+    #    analyze_vattn_distribution(exp)
     # calculate_acc("./results/exp006")
     # compare_experiments(
     #     "./results/exp002",
