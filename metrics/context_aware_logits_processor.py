@@ -272,12 +272,18 @@ class ContextAwareLogitsProcessor(LogitsProcessor):
             threshold = sorted_supports[keep_count - 1].item()
 
             keep_mask = (supports >= threshold)
+            keep_indices = topk_ids[keep_mask].tolist()
 
             drop_mask = torch.ones(scores.shape[-1], dtype=torch.bool, device=scores.device)
             drop_mask[topk_ids] = False
             drop_mask[topk_ids[~keep_mask]] = True
 
             scores[b, drop_mask] = -float("inf")
+
+            # Store CAD's top-k//2 candidates for intersection with DLA
+            if not hasattr(self.model, "_cad_top_k"):
+                self.model._cad_top_k = {}
+            self.model._cad_top_k[b] = set(keep_indices)
 
         return scores
 

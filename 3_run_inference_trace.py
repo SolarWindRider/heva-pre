@@ -386,6 +386,7 @@ def generate_with_attention_guidance(
     model.attn_acc_input = []
     model.attn_acc_visual = []
     model.gen_zs = []
+    model._cad_top_k = {}  # Clear CAD candidates from previous step
 
     if use_attention_guidance:
         v_start = visual_start[0].item()
@@ -402,6 +403,7 @@ def generate_with_attention_guidance(
         ctx_token_indices = get_context_token_indices(batch_input_ids, processor=processor)
         ctx_processor.set_context_token_indices(ctx_token_indices)
         logits_processor = [ctx_processor]
+        model.use_context_aware = True
 
     gen_config = {
         "max_new_tokens": max_new_tokens,
@@ -440,7 +442,12 @@ def generate_with_attention_guidance(
 
     results = []
     for b in range(actual_batch_size):
-        generated_text = processor.decode(outputs.sequences[b][prompt_token_num:])
+        # Per-sample prompt token count
+        sample_prompt_token_num = prompt_token_nums[b]
+        # Per-sample generation token count
+        sample_gen_token_num = outputs.sequences[b].shape[0] - sample_prompt_token_num
+
+        generated_text = processor.decode(outputs.sequences[b][sample_prompt_token_num:])
         answer_pred = ""
         answer_format = samples[b].get("answer_format", "mcq")
 
@@ -464,14 +471,14 @@ def generate_with_attention_guidance(
             correct = answer_pred != "" and answer_pred in str(samples[b].get("answer", "")).upper()
 
         prompt_tokens = all_inputs[b]["input_ids"][0].tolist()
-        gen_tokens = outputs.sequences[b][prompt_token_num:].tolist()
+        gen_tokens = outputs.sequences[b][sample_prompt_token_num:].tolist()
         results.append({
             "prompt_text": processor.decode(all_inputs[b]["input_ids"][0]),
             "generated_text": generated_text,
             "predicted_answer": answer_pred,
             "correct": correct,
-            "prompt_token_num": prompt_token_nums[b],
-            "gen_token_num": gen_token_num,
+            "prompt_token_num": sample_prompt_token_num,
+            "gen_token_num": sample_gen_token_num,
             "prompt_tokens": prompt_tokens,
             "gen_tokens": gen_tokens,
             "gen_entropy": gen_entropy[:, b] if gen_entropy is not None else None,

@@ -134,75 +134,52 @@ def _sample_with_vattn_and_entropy(
     )
 
     # Monkey-patch attention to capture z (before reshape) for ALL layers.
-    # The patch captures model_all_z_ref which is set to self._all_layers_z below.
+    # The patch writes to model_all_z_ref directly; reader reads from the same dict.
     # This mirrors transformer_lens's hook_z: z per layer per token.
-    model_all_z_ref = [{}]  # defined outside if block so it's always in scope
-    if not hasattr(self, "_z_patched") or not self._z_patched:
+    if not hasattr(self, "_model_all_z_ref"):
+        self._model_all_z_ref = {}
         from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextAttention
 
         original_forward = Qwen3VLTextAttention.forward
+        _parent_model = self
 
-        def patched_forward(
-            self,
-            hidden_states,
-            position_embeddings,
-            attention_mask=None,
-            past_key_values=None,
-            cache_position=None,
-            **kwargs,
-        ):
+        def patched_forward(this, hidden_states, position_embeddings, attention_mask=None, past_key_values=None, cache_position=None, **kwargs):
             input_shape = hidden_states.shape[:-1]
-            hidden_shape = (*input_shape, -1, self.head_dim)
+            hidden_shape = (*input_shape, -1, this.head_dim)
 
-            query_states = self.q_norm(
-                self.q_proj(hidden_states).view(hidden_shape)
-            ).transpose(1, 2)
-            key_states = self.k_norm(
-                self.k_proj(hidden_states).view(hidden_shape)
-            ).transpose(1, 2)
-            value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+            query_states = this.q_norm(this.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+            key_states = this.k_norm(this.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+            value_states = this.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
             cos, sin = position_embeddings
-            query_states, key_states = apply_rotary_pos_emb(
-                query_states, key_states, cos, sin
-            )
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
             if past_key_values is not None:
-                cache_kwargs = {
-                    "sin": sin,
-                    "cos": cos,
-                    "cache_position": cache_position,
-                }
-                key_states, value_states = past_key_values.update(
-                    key_states, value_states, self.layer_idx, cache_kwargs
-                )
+                cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+                key_states, value_states = past_key_values.update(key_states, value_states, this.layer_idx, cache_kwargs)
 
-            attn_output, attn_weights = eager_attention_forward(
-                self,
-                query_states,
-                key_states,
-                value_states,
-                attention_mask,
-                dropout=0.0 if not self.training else self.attention_dropout,
-                scaling=self.scaling,
-                **kwargs,
+            if this.config._attn_implementation != "eager":
+                from transformers.models.qwen3_vl.modeling_qwen3_vl import ALL_ATTENTION_FUNCTIONS
+                attention_interface = ALL_ATTENTION_FUNCTIONS[this.config._attn_implementation]
+            else:
+                from transformers.models.qwen3_vl.modeling_qwen3_vl import eager_attention_forward as attention_interface
+
+            attn_output, attn_weights = attention_interface(
+                this, query_states, key_states, value_states, attention_mask,
+                dropout=0.0 if not this.training else this.attention_dropout,
+                scaling=this.scaling, **kwargs,
             )
 
-            # Capture z before reshape: (batch, seq, heads, d_head)
-            # model_all_z_ref[0] is the model's _all_layers_z dict
-            model_all_z_ref[0][self.layer_idx] = attn_output.clone()
+            # Capture z BEFORE o_proj: transpose to (batch, seq, heads, d_head)
+            # and store on parent model dict to persist across _sample calls
+            _parent_model._model_all_z_ref[this.layer_idx] = attn_output.transpose(1, 2).clone()
 
             attn_output = attn_output.reshape(*input_shape, -1).contiguous()
-            attn_output = self.o_proj(attn_output)
+            attn_output = this.o_proj(attn_output)
             return attn_output, attn_weights
 
         Qwen3VLTextAttention.forward = patched_forward
         self._z_patched = True
-
-    # _all_layers_z: dict mapping layer_idx -> z tensor (batch, seq, heads, d_head)
-    # The patch writes to this via model_all_z_ref[0] closure
-    self._all_layers_z = {}
-    model_all_z_ref[0] = self._all_layers_z
 
     model_forward = self.__call__
     compile_forward = self._valid_auto_compile_criteria(model_kwargs, generation_config)
@@ -260,17 +237,16 @@ def _sample_with_vattn_and_entropy(
         # Cache attentions for ContextAwareLogitsProcessor (reads model._last_attentions)
         self._last_attentions = outputs.attentions
 
-        # Collect all layers' z for DLA trace (mirrors transformer_lens hook_z)
-        # The patch writes to self._all_layers_z (via model_all_z_ref[0] closure)
+        # Collect all layers' z for DLA trace
         num_layers = self.model.language_model.config.num_hidden_layers
         all_z_list = []
         for layer_idx in range(num_layers):
-            z = self._all_layers_z.get(layer_idx)
+            z = self._model_all_z_ref.get(layer_idx)
             if z is not None:
                 all_z_list.append(z)
             else:
                 # Should not happen in normal flow; pad with zeros using first available
-                first_z = next((v for v in self._all_layers_z.values()), None)
+                first_z = next((v for v in self._model_all_z_ref.values()), None)
                 if first_z is not None:
                     all_z_list.append(torch.zeros_like(first_z))
                 else:
@@ -311,58 +287,56 @@ def _sample_with_vattn_and_entropy(
             and len(self.gen_zs) > 0
         ):
             critical_indices = getattr(self, "critical_indices", [])
-            if critical_indices and len(critical_indices) > 0:
+            if critical_indices:
                 top_k_vocab = getattr(self, "attn_guidance_top_k", 10)
-                top_k_attn = getattr(self, "attn_guidance_topk_attn", 5)
                 dla_entropy_threshold = getattr(self, "dla_entropy_threshold", None)
 
                 all_zs_current = self.gen_zs[-1]
-                if all_zs_current is None:
-                    has_attn_guidance_override = torch.zeros(batch_size, dtype=torch.bool, device=next_token_logits.device)
-                else:
+                if all_zs_current is not None:
+                    use_context_aware = getattr(self, "use_context_aware", False)
+                    next_tokens = torch.zeros(batch_size, dtype=torch.long, device=next_token_logits.device)
                     for b in range(batch_size):
                         if dla_entropy_threshold is not None:
                             step_entropy = get_entropy(next_token_logits[b:b+1]).item()
                             if step_entropy < dla_entropy_threshold:
+                                has_attn_guidance_override[b] = True
+                                next_tokens[b] = torch.argmax(next_token_logits[b]).item()
                                 continue
-                        else:
-                            step_entropy = None
 
+                        # DLA filter: top-k by logit, score by raw_dot path, keep top-k//2.
                         _, top_indices = torch.topk(
-                            next_token_scores[b:b+1],
-                            k=min(top_k_vocab, next_token_scores.shape[-1]),
+                            next_token_logits[b:b+1],
+                            k=min(top_k_vocab, next_token_logits.shape[-1]),
                         )
                         top_indices = top_indices[0]
-                        valid_candidates = []
-                        valid_logits = []
+                        candidate_scores = []
                         for i in range(len(top_indices)):
                             tok_id = top_indices[i].item()
-                            path, _ = compute_dla_path_for_token(
+                            _, path_score = compute_dla_path_for_token(
                                 all_zs_current, self, tok_id, b=b
                             )
-                            is_valid = verify_attention_focus_on_path(
-                                outputs.attentions,
-                                path,
-                                critical_indices,
-                                b=b,
-                                top_k_attn=top_k_attn,
-                            )
-                            if is_valid:
-                                valid_candidates.append(tok_id)
-                                valid_logits.append(next_token_scores[b, tok_id].item())
-                        if len(valid_candidates) == 1:
-                            next_tokens[b] = valid_candidates[0]
-                        elif len(valid_candidates) > 1:
-                            valid_logits_tensor = torch.tensor(
-                                valid_logits, device=next_token_logits.device
-                            )
-                            normalized_probs = F.softmax(valid_logits_tensor, dim=-1)
-                            if normalized_probs.numel() == 1:
-                                next_tokens[b] = valid_candidates[0]
-                            else:
-                                best_idx = torch.argmax(normalized_probs, dim=-1).item()
-                                next_tokens[b] = valid_candidates[best_idx]
-                            has_attn_guidance_override[b] = True
+                            candidate_scores.append((tok_id, path_score))
+                        candidate_scores.sort(key=lambda x: x[1], reverse=True)
+
+                        keep_count = max(1, len(candidate_scores) // 2)
+                        dla_candidates = {tok_id for tok_id, _ in candidate_scores[:keep_count]}
+
+                        if use_context_aware and hasattr(self, "_cad_top_k") and self._cad_top_k is not None:
+                            cad_candidates = self._cad_top_k.get(b, set())
+                            final_candidates = list(dla_candidates & cad_candidates) if cad_candidates else list(dla_candidates)
+                        else:
+                            final_candidates = list(dla_candidates)
+                        if not final_candidates:
+                            final_candidates = list(dla_candidates)
+
+                        # Multinomial sampling over DLA's top-k//2 (original DLA design).
+                        valid_logits = [next_token_logits[b, tok_id].item() for tok_id in final_candidates]
+                        valid_logits_tensor = torch.tensor(valid_logits, device=next_token_logits.device)
+                        cat_probs = F.softmax(valid_logits_tensor, dim=-1)
+                        next_tokens[b] = int(final_candidates[torch.multinomial(cat_probs, 1).item()])
+                        has_attn_guidance_override[b] = True
+                else:
+                    has_attn_guidance_override = torch.zeros(batch_size, dtype=torch.bool, device=next_token_logits.device)
             else:
                 has_attn_guidance_override = torch.zeros(batch_size, dtype=torch.bool, device=next_token_logits.device)
         else:
@@ -388,10 +362,10 @@ def _sample_with_vattn_and_entropy(
                 scores += (next_token_scores,)
             if output_logits:
                 raw_logits += (next_token_logits,)
-            # if output_attentions:
-            #     decoder_attentions += (outputs.decoder_attentions,) if self.config.is_encoder_decoder else (outputs.attentions,)
-            #     if self.config.is_encoder_decoder:
-            #         cross_attentions += (outputs.cross_attentions,)
+            if output_attentions:
+                decoder_attentions += (outputs.decoder_attentions,) if self.config.is_encoder_decoder else (outputs.attentions,)
+                if self.config.is_encoder_decoder:
+                    cross_attentions += (outputs.cross_attentions,)
             if output_hidden_states:
                 decoder_hidden_states += (
                     (outputs.decoder_hidden_states,)
@@ -401,13 +375,10 @@ def _sample_with_vattn_and_entropy(
 
         # token selection
         if has_attn_guidance_override.any():
-            pass  # next_tokens already set in attention-guided block above
-        elif do_sample:
-            probs = nn.functional.softmax(next_token_scores, dim=-1)
-            # TODO (joao): this OP throws "skipping cudagraphs due to ['incompatible ops']", find solution
-            next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
+            pass
         else:
-            next_tokens = torch.argmax(next_token_scores, dim=-1)
+            probs = nn.functional.softmax(next_token_scores, dim=-1)
+            next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
 
         # finished sentences should have their next token be a padding token
         if has_eos_stopping_criteria:
@@ -430,8 +401,8 @@ def _sample_with_vattn_and_entropy(
         # Otherwise a reference to outputs is kept which keeps the logits alive in the next iteration
         del outputs
 
-        # Clear _all_layers_z for the next generation step (z was already collected into gen_zs)
-        self._all_layers_z.clear()
+        # Clear model all_z_ref for the next generation step
+        self._model_all_z_ref.clear()
 
     if streamer is not None:
         streamer.end()
@@ -575,7 +546,9 @@ def compute_dla_path_for_token(all_zs, model, token_id, b=0):
         # 只取最后一个 token 的 z
         last_zs = all_zs[:, -1, b, -1, :, :]  # (num_layers, heads, d_head)
     else:
-        last_zs = all_zs[:, b, -1, :, :]  # (num_layers, heads, d_head)
+        # Single tensor: (num_layers, batch, heads, seq, d_head)
+        # Extract last token from seq dim (dim=3) for batch b
+        last_zs = all_zs[:, b, :, -1, :]  # (num_layers, heads, d_head)
 
     num_layers = last_zs.shape[0]
     n_heads = last_zs.shape[1]
@@ -589,6 +562,7 @@ def compute_dla_path_for_token(all_zs, model, token_id, b=0):
         target_vector = W_U[token_id, :].detach()
 
     path = {}
+    layer_dots = []
 
     # 从后往前（从最后一层到第一层）
     for layer_idx in reversed(range(num_layers)):
@@ -597,23 +571,24 @@ def compute_dla_path_for_token(all_zs, model, token_id, b=0):
 
         # head_outputs = z @ W_O: (heads, d_model)
         head_outputs = torch.einsum("hd,hdm->hm", z, W_O)
-        # head_contributions = head_outputs @ target_vector: (heads,)
-        head_contributions = head_outputs @ target_vector
 
-        max_head = torch.argmax(head_contributions).item()
-        max_score = head_contributions[max_head].item()
+        # Raw dot product (no normalization): head_output · target.
+        # Magnitude of head_output ||h|| IS the signal — heads that contribute
+        # more to the residual (e.g. by attending to visual tokens) have
+        # larger ||h||. Cosine threw this away, leaving only noise (~0.03).
+        head_dots = head_outputs @ target_vector  # (heads,)
 
-        path[layer_idx] = {"head": max_head, "score": max_score}
+        max_head = torch.argmax(head_dots).item()
+        max_dot = head_dots[max_head].item()
+        path[layer_idx] = {"head": max_head, "score": max_dot}
+        layer_dots.append(max_dot)
 
-        # 更新 target_vector: 追溯到上一层
-        # 在 GQA 结构下 W_V 无法按 Q head 分解（z 是 Q×KV 混合输出，W_V 只作用于 KV 维度）。
-        # 改用 head_outputs 的均值来近似：取所有 head 的 W_O 输出均值作为残差传递的代理。
-        # 这样保持 d_model 维度，同时保留 max_head 的主导方向信息。
-        target_vector = head_outputs.mean(dim=0)  # (d_model,)
-        # 归一化防止数值爆炸
-        target_vector = target_vector / (target_vector.norm() + 1e-6)
+        # 残差传递：使用当前层 head_outputs 的 mean 方向作为下一层的 target。
+        # 不归一化以保留 magnitude 信息。
+        target_vector = head_outputs.mean(dim=0)
 
-    return {k: path[k] for k in sorted(path.keys())}, last_zs
+    avg_dot = float(sum(layer_dots) / len(layer_dots))
+    return {k: path[k] for k in sorted(path.keys())}, avg_dot
 
 
 def _get_layer_W_O(model, layer_idx):
@@ -626,48 +601,3 @@ def _get_layer_W_O(model, layer_idx):
         return W_O.view(n_heads, head_dim, -1)  # (n_heads, d_head, d_model)
     except Exception:
         return None
-
-
-def verify_attention_focus_on_path(
-    attentions, head_path, critical_indices, b=0, top_k_attn=5
-):
-    """
-    检查 head_path 中各层的 head 是否将注意力聚焦在 critical_indices 上。
-
-    等价于 transformer_lens 的 verify_attention_focus。
-
-    Args:
-        attentions: attention tuple, attentions[-1] = (batch, heads, seq, seq)
-        head_path: Dict[layer_idx, {"head": head_idx, "score": ...}]
-        critical_indices: List[int] of token indices that are "critical" (e.g., numbers, operators)
-        b: batch index
-        top_k_attn: 取每个 head 的 top-k 注意力位置来检查
-
-    Returns:
-        bool: 如果 >= 30% 的层关注了 critical_indices 则返回 True
-    """
-    if not critical_indices or head_path is None:
-        return False
-
-    # attentions[-1]: (batch, heads, query_len, key_len)
-    attn = attentions[-1][b]  # (heads, query, key)
-    # 取最后一个 query（当前生成 token）的注意力
-    attn_last = attn[:, -1, :]  # (heads, key_len)
-
-    seq_len = attn_last.shape[-1]
-    hit_count = 0
-    total = len(head_path)
-
-    for layer_idx, info in head_path.items():
-        head = info["head"]
-        attn_pattern = attn_last[head]  # (key_len,)
-
-        k = min(top_k_attn, seq_len)
-        _, top_indices = torch.topk(attn_pattern, k=k)
-        top_list = top_indices.tolist()
-
-        if any(idx in top_list for idx in critical_indices):
-            hit_count += 1
-
-    ratio = hit_count / total if total > 0 else 0
-    return ratio >= 0.3

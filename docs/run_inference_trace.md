@@ -12,14 +12,16 @@
 
 ```
 生成阶段：每步采样前
-    ├─ 捕获 gen_zs（所有层 z） + gen_entropy + gen_vattn
-    ├─ 对候选 token 计算 DLA 反向路径
-    ├─ 验证路径是否聚焦视觉 token
-    └─ 只从通过验证的候选中采样
-         ↓
-    保存完整 trace 数据
-         ↓
-    7_statistics.py 做分析
+     ├─ 捕获 gen_zs（所有层 z） + gen_entropy + gen_vattn
+     ├─ CAD 介入（如启用，entropy >= ctx_entropy_threshold 时触发）
+     ├─ DLA 引导（如启用，entropy >= dla_entropy_threshold 时触发）
+     │    ├─ 对候选 token 计算 DLA 反向路径
+     │    └─ 验证路径是否聚焦视觉 token
+     └─ 从通过验证的候选中采样（如无验证通过则用 top-1）
+          ↓
+     保存完整 trace 数据
+          ↓
+     7_statistics.py 做分析
 ```
 
 ## 核心技术：DLA 反向路径计算
@@ -233,20 +235,22 @@ python 3_run_inference_trace.py \
     --dataset VisuRiddles \
     --num_samples 50
 
-# 开启 DLA Trace 引导生成
+# 开启 DLA Trace 引导生成（熵高于阈值时触发）
 python 3_run_inference_trace.py \
     --exp_name exp_trace \
     --dataset VisuRiddles \
     --use_attention_guidance true \
+    --dla_entropy_threshold 1.27 \
     --num_samples 50
 
-# 叠加 Context-Aware Decoding + DLA Trace 引导
+# 叠加 Context-Aware Decoding + DLA Trace 引导（均按熵触发）
 python 3_run_inference_trace.py \
     --exp_name exp_cad_trace \
     --dataset RAVEN \
     --use_context_aware true \
     --use_attention_guidance true \
     --ctx_entropy_threshold 5.0 \
+    --dla_entropy_threshold 1.27 \
     --num_samples 100
 ```
 
@@ -275,39 +279,52 @@ python 3_run_inference_trace.py \
 ```bash
 python 3_run_inference_trace.py \
     --exp_name exp_trace --dataset VisuRiddles \
-    --use_attention_guidance true --num_samples 50
+    --use_attention_guidance true \
+    --dla_entropy_threshold 1.27 \
+    --num_samples 50
 ```
+
+**触发条件**：`use_attention_guidance=true` 且当前步 `entropy >= dla_entropy_threshold`。
 
 **每步**的采样流程：
 
 ```
 next_token_scores = logits_processor(...)
         ↓
-取 top-10 候选
+    entropy >= dla_entropy_threshold?
+        │是                           │否
+        ▼                            ▼
+  取 top-10 候选               直接用标准采样
         ↓
 对每个候选 token：
     [阶段一] compute_dla_path_for_token(all_zs, model, token_id)
-        → 逐层反向追溯：W_U ← z·W_O·W_V
-        → 每层选贡献最大的 head
+        → 逐层反向追溯：W_U ← z·W_O
+        → 每层选贡献最大的 head，记录 score
         → 得到 path = {layer: {"head": h, "score": s}}
         ↓
     [阶段二] verify_attention_focus_on_path(attentions, path, critical_indices)
         → 检查 path 中各 head 的 top-5 实际 atten 是否命中视觉 token
-        → 命中率 >= 30% → is_valid = True
+        → 返回 hit_ratio (0.0~1.0)
         ↓
-所有候选都验证完后：
-    幸存候选（is_valid=True）→ 重新归一化 → 采样
+  combined_score = hit_ratio + sum(path["score"])
+        ↓
+所有候选按 combined_score 排序 → 保留 top-k//2（默认 5 个）
+        ↓
+幸存候选 → 重新归一化 softmax → 采样
 ```
 
-**两阶段缺一不可**：
-- 阶段一只回答"哪个 head 贡献大"（因果结构，用 `z` + 矩阵计算）
-- 阶段二才回答"该 head 是否真的在看视觉 token"（实际行为，用 softmax atten 权重验证）
+**两阶段的意义**：
+- 阶段一 `compute_dla_path_for_token`：计算因果路径得分（用 `z` + 矩阵）
+- 阶段二 `verify_attention_focus_on_path`：验证路径 head 是否真的 attend 到视觉 token（hit_ratio）
+
+两者得分相加得到 `combined_score`，用于排序候选。
 
 **没有 CAD**：`logits_processor` 只做标准处理，熵值不参与任何决策。
 
 **特点**：
 - DLA 过滤是**确定性的**（只看 attention 结构）
-- 即使熵很低，DLA 也会执行（每步都做）
+- **只在当前步熵 >= `dla_entropy_threshold` 时触发**（可调，默认 1.27）
+- 熵低于阈值时跳过 DLA，该步直接用标准采样
 - 适合验证"DLA 路径验证"单独对生成的影响
 
 ### M2: 纯 CAD（Context-Aware Decoding）
@@ -364,72 +381,80 @@ Step 6: 只保留 top-k 中 context_support 最高的 top_k // 2 个候选
 - 只在高熵时触发（低熵时模型很确定，不干预）
 - CAD 事后会记录在 meta.json 的 `use_context_aware` 字段
 
-### M3: DLA + CAD 叠加
+### M3: DLA + CAD 叠加（交集模式）
 
 ```bash
 python 3_run_inference_trace.py \
     --exp_name exp_cad_trace --dataset RAVEN \
     --use_context_aware true --use_attention_guidance true \
-    --ctx_entropy_threshold 5.0 --num_samples 100
+    --ctx_entropy_threshold 5.0 --dla_entropy_threshold 1.27 \
+    --num_samples 100
 ```
+
+**核心逻辑**：CAD 和 DLA **各自独立**从原始 logits 中选 top-k//2，最终候选 = intersection(CAD_top_k//2, DLA_top_k//2)。
 
 **每步的完整执行流程（伪代码级）**：
 
 ```python
-# heva.py:236 — logits_processor 调用（CAD 介入）
+# heva.py:300 — logits_processor 调用（CAD 介入）
 next_token_scores = logits_processor(input_ids, next_token_logits)
-#   ↓
-#   CAD_processor.__call__(input_ids, scores) 内部：
-#   ├── 计算 entropy = H(scores)  （第 250 行）
+# CAD_processor.__call__ 内部：
+#   ├── 计算 entropy = H(scores)
 #   ├── if entropy < threshold: 直接返回 scores，不干预
 #   └── if entropy >= threshold:
 #       ├── 取 top-k 候选 token（默认 20）
 #       ├── 计算每个候选的 context_support
-#       ├── 保留 top-k//2 高 support 的（10个），其余设为 -inf
-#       └── 返回处理后的 scores
-#
-# heva.py:241-285 — Attention Guidance 介入（每步执行，与 entropy 无关）
+#       ├── 保留 top-k//2 高 support 的（10个）
+#       ├── scores[b, drop_mask] = -inf
+#       └── model._cad_top_k[b] = set(cad_candidates)  # 保存 CAD 的 top-k//2
+
+# heva.py:308-388 — Attention Guidance 介入
 if use_attention_guidance and gen_zs:
-    # 在 CAD 处理后的 scores 上取 top-10
-    _, top_indices = torch.topk(next_token_scores, k=10)
+    step_entropy = get_entropy(next_token_logits).item()
+    if step_entropy < dla_entropy_threshold:
+        pass  # 熵低于阈值，跳过
+    else:
+        # DLA 从原始 logits 计算（不依赖 CAD 修改后的 scores）
+        _, top_indices = torch.topk(next_token_logits, k=10)
+        candidate_scores = []
+        for each tok_id in top_indices:
+            path = compute_dla_path_for_token(all_zs_current, model, tok_id)
+            hit_ratio = verify_attention_focus_on_path(...)
+            path_score = sum(info["score"] for info in path.values())
+            combined_score = hit_ratio + path_score
+            candidate_scores.append((tok_id, combined_score))
+        candidate_scores.sort(key=lambda x: x[1], reverse=True)
+        keep_count = max(1, len(candidate_scores) // 2)
+        dla_candidates = set(tok_id for tok_id, _ in candidate_scores[:keep_count])
 
-    for i in range(len(top_indices)):
-        tok_id = top_indices[i]
-        # 阶段一：DLA 反向路径计算
-        path = compute_dla_path_for_token(all_zs_current, model, tok_id)
-        #   逐层反向：W_U ← z·W_O，每层选贡献最大的 head
-        #
-        # 阶段二：验证路径是否聚焦视觉 token
-        is_valid = verify_attention_focus_on_path(
-            outputs.attentions, path, critical_indices, top_k_attn=5
-        )
-        #   检查 path 中各 head 的 top-5 atten 是否命中视觉 token
-        #   命中率 >= 30% → is_valid = True
+        # 与 CAD 的 top-k//2 取交集
+        if use_context_aware and hasattr(model, "_cad_top_k"):
+            final_candidates = list(dla_candidates & model._cad_top_k[b])
+        else:
+            final_candidates = list(dla_candidates)
 
-        if is_valid:
-            valid_candidates.append(tok_id)
-            valid_logits.append(next_token_scores[tok_id])
-
-    if valid_candidates:
-        # 从通过验证的候选中重新归一化采样
-        probs = softmax(valid_logits)
-        next_tokens = multinomial(probs, 1)
-        has_attn_guidance_override = True
-
-# 如果 attention guidance 没有产生幸存者，回退到 top-1
-if not has_attn_guidance_override:
-    next_tokens = top_indices[0]
+        if len(final_candidates) == 1:
+            next_tokens[b] = final_candidates[0]  # 直接用唯一候选
+        elif len(final_candidates) > 1:
+            valid_logits = [next_token_scores[b, tok_id].item() for tok_id in final_candidates]
+            probs = softmax(valid_logits)
+            next_tokens[b] = multinomial(probs, 1)  # 概率采样
+        else:
+            # 交集为空时，fallback 到 DLA top-k//2，概率采样（绝对不用贪心）
+            fallback_logits = [next_token_scores[b, tok_id].item() for tok_id in dla_candidates]
+            fallback_probs = softmax(fallback_logits)
+            next_tokens[b] = list(dla_candidates)[multinomial(fallback_probs, 1)]
 ```
 
 **关键执行顺序与数据依赖**：
 
 | 步骤 | 代码位置 | 输入 | 输出 | 触发条件 |
 |------|---------|------|------|---------|
-| 1. CAD 处理 | `heva.py:236` | 原始 `next_token_logits` | 部分 token 设为 `-inf` | entropy >= threshold |
-| 2. DLA 取候选 | `heva.py:248` | CAD 处理后的 scores | top-10 候选 | 始终（与 entropy 无关）|
-| 3. DLA 路径计算 | `heva.py:265` | `gen_zs[-1]`（所有层 z）| path dict | 始终 |
-| 4. 路径验证 | `heva.py:266` | `outputs.attentions` | `is_valid` bool | 始终 |
-| 5. 重新采样 | `heva.py:275-277` | valid_candidates | `next_tokens` | 存在幸存者 |
+| 1. CAD 处理 | `heva.py:300` | 原始 `next_token_logits` | 部分 token 设为 `-inf`，并保存 `model._cad_top_k` | entropy >= `ctx_entropy_threshold` |
+| 2. DLA 取候选 | `heva.py:331` | 原始 `next_token_logits`（独立于 CAD） | top-10 候选 | `use_attention_guidance=true` **且** entropy >= `dla_entropy_threshold` |
+| 3. DLA 路径计算 | `heva.py:339` | `gen_zs[-1]`（所有层 z）| path dict | 候选验证时执行 |
+| 4. 路径验证 | `heva.py:342` | `outputs.attentions` | hit_ratio float | 候选验证时执行 |
+| 5. CAD/DLA 交集 | `heva.py:354-361` | `dla_candidates` & `model._cad_top_k` | 最终候选 | M3 模式 |
 
 **数据流图**：
 
@@ -437,49 +462,44 @@ if not has_attn_guidance_override:
 原始 logits (vocab,)
        │
        ▼
-[CAD] entropy >= threshold?
+[CAD] entropy >= ctx_entropy_threshold?
        │是                    │否
        ▼                     ▼
-  top-k → support 排序     直接返回原始 scores
+  top-k → support 排序    直接返回原始 scores
   保留 top-k//2
-  其余设为 -inf
+  存入 model._cad_top_k
        │
        ▼
-  处理后的 scores (vocab,)
+[DLA] entropy >= dla_entropy_threshold?
+       │是                           │否
+       ▼                            ▼
+  从原始 logits 取 top-10    直接用标准采样
        │
        ▼
-[AG] torch.topk(scores, k=10)
-  → top_indices (10,)
+  compute_dla_path_for_token()
+  verify_attention_focus_on_path()
        │
        ▼
-  for each tok_id in top_indices:
-       │
-       ├─→ compute_dla_path_for_token()
-       │    用 gen_zs[-1] + W_U + W_O
-       │    输出: path = {layer: {"head": h, "score": s}}
-       │
-       └─→ verify_attention_focus_on_path()
-            用 outputs.attentions（softmax 权重）
-            检查各 head 的 top-5 atten 是否命中 visual tokens
-            输出: is_valid (bool)
+  combined_score = hit_ratio + sum(path["score"])
+  排序 → DLA top-k//2
        │
        ▼
-  过滤: 只保留 is_valid=True 的候选
+  intersection(DLA_top_k//2, CAD_top_k//2)
        │
        ▼
-  幸存者 → softmax → multinomial → next_token
+  最终候选 → softmax → multinomial → next_token
 ```
 
-**注意**：CAD 和 DLA 都是**过滤**机制，不是 boost。CAD 按 context_support 过滤，DLA 按视觉注意力路径验证过滤。两者顺序执行，DLA 在 CAD 的结果上继续过滤。
+**注意**：CAD 和 DLA **独立计算**，最终候选是两者的**交集**。这样比顺序过滤更保守，确保两个机制都认可的候选才保留。
 
 ### 关键区别总结
 
 | 维度 | M1 纯 DLA | M2 纯 CAD | M3 DLA + CAD |
 |------|----------|----------|-------------|
-| **触发条件** | 每步执行 | 只在高熵时触发 | CAD 按熵触发 + DLA 每步执行 |
-| **干预方式** | 过滤候选（路径验证） | 过滤候选（context_support 排序） | CAD 过滤 + DLA 过滤叠加 |
+| **触发条件** | entropy >= `dla_entropy_threshold` | 只在高熵时触发 | CAD 按熵触发 + DLA 按熵触发 |
+| **干预方式** | 排序筛选候选（路径得分 + hit_ratio） | 排序筛选候选（context_support） | CAD 排序筛选 + DLA 排序筛选叠加 |
 | **critical_indices** | 用于 DLA 验证 | 用于识别 context_heads | 用于两者 |
-| **幸存候选数** | 动态（通过验证的比例） | `top_k // 2` 个 | CAD 幸存者再经 DLA 过滤 |
+| **幸存候选数** | `top_k // 2` 个（排序筛选） | `top_k // 2` 个 | intersection(CAD, DLA) = 两者共同认可的候选 |
 | **典型研究问题** | "只看路径是否够吗？" | "过滤到 top_k//2 有效吗？" | "两层过滤是否叠加有效？" |
 
 ### 研究问题的对应关系

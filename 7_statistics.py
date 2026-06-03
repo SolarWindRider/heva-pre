@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 对1_run_inference.py结果的统计分析脚本
 """
@@ -10,7 +11,7 @@ from scipy import stats
 
 
 # 统计ACC
-def calculate_acc(exp_dir):
+def calculate_acc(exp_dir, datasets_filter=None):
     """
     统计实验结果中各个benchmark的准确率
 
@@ -24,10 +25,12 @@ def calculate_acc(exp_dir):
     for bench_dir in sorted(exp_path.iterdir()):
         if not bench_dir.is_dir():
             continue
-
         bench_name = bench_dir.name
+        if datasets_filter is not None and bench_name not in datasets_filter:
+            continue
 
         # 查找所有含有meta的json文件
+        correct_count = 0
         correct_count = 0
         total_count = 0
 
@@ -72,7 +75,7 @@ def calculate_acc(exp_dir):
 
 
 # 统计回答长度与正确性的相关性
-def analyze_response_length_correlation(exp_dir):
+def analyze_response_length_correlation(exp_dir, datasets_filter=None):
     """
     分析回答长度与正确性之间的相关性
 
@@ -92,6 +95,8 @@ def analyze_response_length_correlation(exp_dir):
             continue
 
         bench_name = bench_dir.name
+        if datasets_filter is not None and bench_name not in datasets_filter:
+            continue
         lengths = []
         correct_list = []
 
@@ -201,7 +206,7 @@ def analyze_response_length_correlation(exp_dir):
 
 
 # 分析token熵与视觉注意力的相关性
-def analyze_entropy_vattn_correlation(exp_dir):
+def analyze_entropy_vattn_correlation(exp_dir, datasets_filter=None):
     """
     分析每个样本中token熵与视觉注意力(vattn)的相关性
 
@@ -230,6 +235,8 @@ def analyze_entropy_vattn_correlation(exp_dir):
             continue
 
         bench_name = bench_dir.name
+        if datasets_filter is not None and bench_name not in datasets_filter:
+            continue
         correlations = []
 
         pkls_dir = bench_dir / "pkls"
@@ -361,7 +368,7 @@ def analyze_entropy_vattn_correlation(exp_dir):
 
 
 # 分析高熵token是否具有更高的视觉注意力
-def analyze_high_entropy_vattn(exp_dir, top_percent=0.2):
+def analyze_high_entropy_vattn(exp_dir, top_percent=0.2, datasets_filter=None):
     """
     分析高熵token是否具有更高的视觉注意力
 
@@ -391,6 +398,8 @@ def analyze_high_entropy_vattn(exp_dir, top_percent=0.2):
             continue
 
         bench_name = bench_dir.name
+        if datasets_filter is not None and bench_name not in datasets_filter:
+            continue
         vattn_high_list = []
         vattn_low_list = []
         avg_entropy_list = []
@@ -524,7 +533,7 @@ def analyze_high_entropy_vattn(exp_dir, top_percent=0.2):
 
 
 # 分析高熵token的视觉注意力与回答正确性的关系
-def analyze_vattn_correctness(exp_dir, top_percent=0.2):
+def analyze_vattn_correctness(exp_dir, top_percent=0.2, datasets_filter=None):
     """
     分析高熵token的视觉注意力与回答正确性的关系
 
@@ -555,6 +564,8 @@ def analyze_vattn_correctness(exp_dir, top_percent=0.2):
             continue
 
         bench_name = bench_dir.name
+        if datasets_filter is not None and bench_name not in datasets_filter:
+            continue
         heva_list = []
         correct_list = []
         avg_entropy_list = []
@@ -724,7 +735,7 @@ def analyze_vattn_correctness(exp_dir, top_percent=0.2):
 
 
 # 验证假设：高熵token的视觉注意力更高 -> 更容易回答正确
-def verify_heva_hypothesis(exp_dir, top_percent=0.2):
+def verify_heva_hypothesis(exp_dir, top_percent=0.2, datasets_filter=None):
     """
     验证假设：高熵token的HEVA更高更容易回答正确
 
@@ -754,6 +765,8 @@ def verify_heva_hypothesis(exp_dir, top_percent=0.2):
             continue
 
         bench_name = bench_dir.name
+        if datasets_filter is not None and bench_name not in datasets_filter:
+            continue
         c_heva = []
         ic_heva = []
 
@@ -948,7 +961,7 @@ def verify_heva_hypothesis(exp_dir, top_percent=0.2):
 
 
 # 分析Instruct模型 vs Thinking模型中高熵token的特征差异
-def analyze_entropy_token_patterns(exp_dir, top_percent=0.2):
+def analyze_entropy_token_patterns(exp_dir, top_percent=0.2, datasets_filter=None):
     """
     分析高熵token的特征：
     1. 高熵token在回答中的位置分布
@@ -976,6 +989,8 @@ def analyze_entropy_token_patterns(exp_dir, top_percent=0.2):
             continue
 
         bench_name = bench_dir.name
+        if datasets_filter is not None and bench_name not in datasets_filter:
+            continue
         positions = []
         entropies = []
         heva_list = []
@@ -1128,7 +1143,7 @@ def analyze_entropy_token_patterns(exp_dir, top_percent=0.2):
 
 
 # 分析高熵token对应的具体文本内容
-def analyze_high_entropy_text(exp_dir, top_percent=0.2, num_samples=5):
+def analyze_high_entropy_text(exp_dir, top_percent=0.2, num_samples=5, datasets_filter=None):
     """
     分析高熵token对应的具体文本内容，理解其含义
     """
@@ -1155,31 +1170,32 @@ def analyze_high_entropy_text(exp_dir, top_percent=0.2, num_samples=5):
     for bench_dir in sorted(exp_path.iterdir()):
         if not bench_dir.is_dir():
             continue
-
         bench_name = bench_dir.name
-
+        if datasets_filter is not None and bench_name not in datasets_filter:
+            continue
         pkls_dir = bench_dir / "pkls"
         if not pkls_dir.exists():
             continue
-
         for json_file in bench_dir.glob("*_meta.json"):
             try:
                 with open(json_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
 
-                generated_text = data.get("generated_text", "")
+                entropy_path = data.get("gen_entropy_path")
+                tokens_path = data.get("tokens_path")
+                if not entropy_path or not tokens_path:
+                    continue
+                entropy_path = Path(entropy_path)
+                tokens_path = Path(tokens_path)
+                if not entropy_path.exists() or not tokens_path.exists():
+                    continue
+
+                with open(tokens_path, "r", encoding="utf-8") as f:
+                    tokens_data = json.load(f)
+                generated_text = tokens_data.get("gen_text", "")
                 if not generated_text:
                     continue
 
-                entropy_path = data.get("gen_entropy_path")
-                if not entropy_path:
-                    continue
-
-                entropy_path = Path(entropy_path)
-                if not entropy_path.exists():
-                    continue
-
-                # 分词
                 tokens = tokenizer.encode(generated_text, add_special_tokens=False)
 
                 # 加载熵
@@ -1210,32 +1226,49 @@ def analyze_high_entropy_text(exp_dir, top_percent=0.2, num_samples=5):
 
                     # 显示开头的高熵token
                     print(f"\n开头部分高熵token (前10个):")
-                    for idx in high_entropy_indices[:10]:
+                    shown = 0
+                    for idx in high_entropy_indices:
+                        if shown >= 10:
+                            break
                         if idx < len(tokens):
                             token_text = tokenizer.decode([tokens[idx]])
+                            if token_text == "<|endoftext|>":
+                                continue
                             print(
                                 f'  [{idx:4d}] pos={idx/len(entropy):.3f}, entropy={entropy[idx]:.4f}, text="{token_text}"'
                             )
+                            shown += 1
 
                     # 显示中间的高熵token
                     mid_start = len(high_entropy_indices) // 3
-                    mid_end = 2 * len(high_entropy_indices) // 3
                     print(f"\n中间部分高熵token (中间10个):")
-                    for idx in high_entropy_indices[mid_start : mid_start + 10]:
+                    shown = 0
+                    for idx in high_entropy_indices[mid_start:mid_start + 20]:
+                        if shown >= 10:
+                            break
                         if idx < len(tokens):
                             token_text = tokenizer.decode([tokens[idx]])
+                            if token_text == "<|endoftext|>":
+                                continue
                             print(
                                 f'  [{idx:4d}] pos={idx/len(entropy):.3f}, entropy={entropy[idx]:.4f}, text="{token_text}"'
                             )
+                            shown += 1
 
                     # 显示结尾的高熵token
                     print(f"\n结尾部分高熵token (最后10个):")
-                    for idx in high_entropy_indices[-10:]:
+                    shown = 0
+                    for idx in reversed(high_entropy_indices):
+                        if shown >= 10:
+                            break
                         if idx < len(tokens):
                             token_text = tokenizer.decode([tokens[idx]])
+                            if token_text == "<|endoftext|>":
+                                continue
                             print(
                                 f'  [{idx:4d}] pos={idx/len(entropy):.3f}, entropy={entropy[idx]:.4f}, text="{token_text}"'
                             )
+                            shown += 1
 
                     sample_count += 1
 
@@ -1257,26 +1290,30 @@ def analyze_high_entropy_text(exp_dir, top_percent=0.2, num_samples=5):
     for bench_dir in sorted(exp_path.iterdir()):
         if not bench_dir.is_dir():
             continue
-
+        bench_name = bench_dir.name
+        if datasets_filter is not None and bench_name not in datasets_filter:
+            continue
         pkls_dir = bench_dir / "pkls"
         if not pkls_dir.exists():
             continue
-
         for json_file in bench_dir.glob("*_meta.json"):
             try:
                 with open(json_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
 
-                generated_text = data.get("generated_text", "")
-                if not generated_text:
-                    continue
-
                 entropy_path = data.get("gen_entropy_path")
-                if not entropy_path:
+                tokens_path = data.get("tokens_path")
+                if not entropy_path or not tokens_path:
+                    continue
+                entropy_path = Path(entropy_path)
+                tokens_path = Path(tokens_path)
+                if not entropy_path.exists() or not tokens_path.exists():
                     continue
 
-                entropy_path = Path(entropy_path)
-                if not entropy_path.exists():
+                with open(tokens_path, "r", encoding="utf-8") as f:
+                    tokens_data = json.load(f)
+                generated_text = tokens_data.get("gen_text", "")
+                if not generated_text:
                     continue
 
                 tokens = tokenizer.encode(generated_text, add_special_tokens=False)
@@ -1306,8 +1343,8 @@ def analyze_high_entropy_text(exp_dir, top_percent=0.2, num_samples=5):
     # 统计最常见的高熵token
     from collections import Counter
 
-    token_counts = Counter(all_high_token_texts)
-    print(f"\n最常见的高熵token (top 30):")
+    token_counts = Counter(t for t in all_high_token_texts if t != "<|endoftext|>" and t.strip())
+    print(f"\n最常见的高熵token (top 30, 排除<|endoftext|>):")
     for text, count in token_counts.most_common(30):
         print(f'  "{text}": {count}')
 
@@ -1326,7 +1363,7 @@ def compare_thinking_vs_instruct(thinking_exp_dir, instruct_exp_dir, top_percent
     print(f"{'='*60}")
 
     # 收集两个实验的数据
-    def collect_data(exp_dir):
+    def collect_data(exp_dir, datasets_filter=None):
         exp_path = Path(exp_dir)
         sample_hevas = []
         sample_positions = []
@@ -1462,7 +1499,7 @@ def compare_thinking_vs_instruct(thinking_exp_dir, instruct_exp_dir, top_percent
 
 
 # 分析attn_acc (输入注意力与视觉注意力)
-def analyze_attn_acc(exp_dir):
+def analyze_attn_acc(exp_dir, datasets_filter=None):
     """
     分析attn_acc_input和attn_acc_visual的统计特性
 
@@ -1482,6 +1519,8 @@ def analyze_attn_acc(exp_dir):
             continue
 
         bench_name = bench_dir.name
+        if datasets_filter is not None and bench_name not in datasets_filter:
+            continue
         input_accs = []
         visual_accs = []
         correct_input_accs = []
@@ -1548,6 +1587,10 @@ def analyze_attn_acc(exp_dir):
 
     print(f"\n{'Benchmark':<20} {'Input_ACC':<15} {'Visual_ACC':<15} {'样本数':<10}")
     print("-" * 60)
+    if not bench_results:
+        print("No valid samples with pkls data.")
+        return
+
     for bench_name in sorted(bench_results.keys()):
         data = bench_results[bench_name]
         n = len(data["input_accs"])
@@ -1704,7 +1747,7 @@ def analyze_attn_acc(exp_dir):
 
 
 # 最后一层视觉注意力分布分析 (vattn分布统计)
-def analyze_vattn_distribution(exp_dir):
+def analyze_vattn_distribution(exp_dir, datasets_filter=None):
     """
     统计 gen_vattn.pkl 中 vattn 的四分位数分布。
 
@@ -1772,6 +1815,8 @@ def analyze_vattn_distribution(exp_dir):
             continue
 
         bench_name = bench_dir.name
+        if datasets_filter is not None and bench_name not in datasets_filter:
+            continue
         vattn_list = []
 
         pkls_dir = bench_dir / "pkls"
@@ -1818,7 +1863,7 @@ def analyze_vattn_distribution(exp_dir):
     return bench_results
 
 
-def analyze_entropy_distribution(exp_dir, threshold=None):
+def analyze_entropy_distribution(exp_dir, threshold=None, datasets_filter=None):
     """
     统计 gen_entropy.pkl 中熵的四分位数分布。
 
@@ -1844,6 +1889,8 @@ def analyze_entropy_distribution(exp_dir, threshold=None):
             continue
 
         bench_name = bench_dir.name
+        if datasets_filter is not None and bench_name not in datasets_filter:
+            continue
         entropy_list = []
 
         for json_file in bench_dir.glob("*_meta.json"):
@@ -1945,6 +1992,8 @@ def analyze_entropy_distribution(exp_dir, threshold=None):
             continue
 
         bench_name = bench_dir.name
+        if datasets_filter is not None and bench_name not in datasets_filter:
+            continue
         entropy_list = []
 
         pkls_dir = bench_dir / "pkls"
@@ -1992,7 +2041,7 @@ def analyze_entropy_distribution(exp_dir, threshold=None):
 
 
 # 统计得到最终回答的样本比例
-def analyze_answer_proportion(exp_dir):
+def analyze_answer_proportion(exp_dir, datasets_filter=None):
     """
     统计得到最终回答的样本比例，即 meta JSON 中 predicted_answer 不为空的样本数量 / 总样本数。
 
@@ -2010,6 +2059,8 @@ def analyze_answer_proportion(exp_dir):
             continue
 
         bench_name = bench_dir.name
+        if datasets_filter is not None and bench_name not in datasets_filter:
+            continue
         has_answer_count = 0
         bench_total = 0
 
@@ -2107,6 +2158,8 @@ def analyze_high_entropy_tokens_detail(
             continue
 
         bench_name = bench_dir.name
+        if datasets_filter is not None and bench_name not in datasets_filter:
+            continue
 
         for json_file in bench_dir.glob("*_meta.json"):
             try:
@@ -2536,27 +2589,42 @@ def compare_experiments(
 
 
 if __name__ == "__main__":
-    exps = ["./results/exp021", "./results/exp022", "./results/exp023", "./results/exp024", "./results/exp025", "./results/exp026", "./results/exp027", "./results/exp028", "./results/exp02v1", "./results/exp02v2",]
-    for exp in exps:
-        print("========================================")
-        print(exp)
-        calculate_acc(exp)
-    #    analyze_answer_proportion(exp)
-    #    analyze_vattn_distribution(exp)
-    # calculate_acc("./results/exp006")
-    # compare_experiments(
-    #     "./results/exp002",
-    #     "./results/exp011",
-    #     exp1_name="without vattn",
-    #     exp2_name="with vattn",
-    #     output_file="compare_exp002_vs_exp011.txt",
-    # )
+    import argparse
+    parser = argparse.ArgumentParser(description="Statistics analysis for HEVA experiments")
+    parser.add_argument("--exp", type=str, default="./results/exp021", help="Experiment directory")
+    parser.add_argument("--datasets", type=str, default="",
+                        help="Comma-separated dataset names to include (default: all)")
+    parser.add_argument("--function", type=str, default="acc",
+                        choices=["acc", "length", "entropy_vattn", "high_entropy_vattn",
+                                 "vattn_correct", "verify_heva", "token_patterns", "text",
+                                 "compare_thinking", "attn_acc", "full"],
+                        help="Analysis function to run")
+    args = parser.parse_args()
 
-    # # 高熵token详细分析
-    # expdir = "./results/exp021"
-    # analyze_high_entropy_tokens_detail(expdir, top_percent=0.2, num_samples=10)
-    # analyze_answer_proportion("./results/exp047")
-    # analyze_answer_proportion("./results/exp006")
-    # analyze_vattn_distribution("./results/exp047")
-    # analyze_vattn_distribution("./results/exp006")
-    # analyze_entropy_distribution("./results/exp021", threshold=1.27)
+    datasets_filter = [d.strip() for d in args.datasets.split(",") if d.strip()] if args.datasets else None
+
+    def should_include_bench(bench_name):
+        return datasets_filter is None or bench_name in datasets_filter
+
+    exp = args.exp
+    print(f"========================================")
+    print(exp)
+
+    if args.function in ("acc", "full"):
+        calculate_acc(exp, datasets_filter)
+    if args.function in ("length", "full"):
+        analyze_response_length_correlation(exp, datasets_filter)
+    if args.function in ("entropy_vattn", "full"):
+        analyze_entropy_vattn_correlation(exp, datasets_filter)
+    if args.function in ("high_entropy_vattn", "full"):
+        analyze_high_entropy_vattn(exp, datasets_filter=datasets_filter)
+    if args.function in ("vattn_correct", "full"):
+        analyze_vattn_correctness(exp, datasets_filter=datasets_filter)
+    if args.function in ("verify_heva", "full"):
+        verify_heva_hypothesis(exp, datasets_filter=datasets_filter)
+    if args.function in ("token_patterns", "full"):
+        analyze_entropy_token_patterns(exp, datasets_filter=datasets_filter)
+    if args.function in ("text", "full"):
+        analyze_high_entropy_text(exp, top_percent=0.2, num_samples=5, datasets_filter=datasets_filter)
+    if args.function in ("attn_acc", "full"):
+        analyze_attn_acc(exp, datasets_filter)
