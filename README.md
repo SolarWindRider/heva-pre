@@ -297,6 +297,35 @@ python 3_run_inference_trace.py --seed 42 ...
 4. **3_run_inference_trace.py 必须用 left-padding**（batch>1 时）: right-padding 会破坏 next-token 预测
 5. **CAD 是减法**: 设 `scores[b, drop_mask] = -inf`，不会增强任何 token
 6. **`metrics/inference.py:12` 的 monkey-patch**: import 时立即替换 `Qwen3VLForConditionalGeneration._sample`，**不要移动或包装它**
+7. **⚠️ DLA 和 CAD 在 2B 模型上**目前**降准确率**（详见 `docs/DIAGNOSIS.md`）:
+   - DLA thr=1.3: THK -4.66%, Instruct -5.50%
+   - CAD thr=1.3: THK -1.66%, Instruct -2.33%
+   - **根因**: 阈值 1.3 触发太频繁（~20% steps）→ 扰动累积 → vicious cycle（生成卡 8192）
+   - **修复**: 跑高阈值实验 `NV3-2b-thr2.0.sh` / `NV3-2b-thr2.5.sh` / `NV-V-2b-thr2.0.sh` / `NV-V-2b-thr2.5.sh`
+
+---
+
+## 已知问题: DLA / CAD 准确率下降 (2026-06-03)
+
+详见 [`docs/DIAGNOSIS.md`](docs/DIAGNOSIS.md) 完整诊断报告。
+
+**关键数据**:
+- 基线 (NV0) THK 0.5083 / Instruct 0.4483
+- DLA (NV3 thr=1.3) THK 0.4617 (-4.66%) / Instruct 0.3933 (-5.50%)
+- CAD (NV-V thr=1.3) THK 0.4917 (-1.66%) / Instruct 0.4250 (-2.33%)
+
+**三个根本原因**:
+1. 阈值 1.3 ≈ p75,触发 ~20% steps,对 1500-token 生成是 300+ 次扰动
+2. DLA 把低熵 step 推成高熵 step,触发更多 DLA → vicious cycle (8192 上限)
+3. `||h||` 信号是置信度,不是视觉依赖。DLA top-20 ≈ 模型 top-20
+
+**任务类型影响**:
+- **直接视觉查询** (AI2D, RealWorldQA): DLA 帮 (+1~3%)
+- **多步推理** (LogicVista, MARVEL): DLA 大幅伤害 (-9% 到 -17%)
+
+**已创建的修复脚本**:
+- `NV3-2b-thr1.7.sh` / `NV3-2b-thr2.0.sh` / `NV3-2b-thr2.5.sh` — DLA 高阈值
+- `NV-V-2b-thr1.7.sh` / `NV-V-2b-thr2.0.sh` / `NV-V-2b-thr2.5.sh` — CAD 高阈值
 
 ---
 

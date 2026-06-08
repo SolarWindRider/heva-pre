@@ -579,7 +579,7 @@ def run_inference(
                 )
                 gen_entropy_path = os.path.join(output_dir, "pkls", f"{idx}_gen_entropy.pkl")
                 gen_vattn_path = os.path.join(output_dir, "pkls", f"{idx}_gen_vattn.pkl")
-                gen_zs_path = os.path.join(output_dir, "pkls", f"{idx}_gen_zs.pkl")
+                # gen_zs_path = os.path.join(output_dir, "pkls", f"{idx}_gen_zs.pkl")
 
                 if result["gen_entropy"] is not None:
                     with open(gen_entropy_path, "wb") as f:
@@ -587,9 +587,11 @@ def run_inference(
                 if result["gen_vattn"] is not None:
                     with open(gen_vattn_path, "wb") as f:
                         pickle.dump(result["gen_vattn"], f)
-                if result["gen_zs"] is not None:
-                    with open(gen_zs_path, "wb") as f:
-                        pickle.dump(result["gen_zs"], f)
+                # gen_zs is disabled to save disk space (~200MB-1GB per sample).
+                # Re-enable by uncommenting the 3 lines below if needed for offline analysis.
+                # if result["gen_zs"] is not None:
+                #     with open(gen_zs_path, "wb") as f:
+                #         pickle.dump(result["gen_zs"], f)
 
                 tokens = {
                     "prompt_text": processor.decode(result["prompt_tokens"]),
@@ -615,7 +617,6 @@ def run_inference(
                     "avg_vattn": avg_vattn,
                     "gen_entropy_path": gen_entropy_path,
                     "gen_vattn_path": gen_vattn_path,
-                    "gen_zs_path": gen_zs_path,
                     "tokens_path": tokens_path,
                     "use_context_aware": use_context_aware,
                     "use_attention_guidance": use_attention_guidance,

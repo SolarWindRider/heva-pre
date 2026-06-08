@@ -294,6 +294,29 @@ model.use_context_aware = True
 
 The DLA mechanism was validated across 12 datasets (VisuRiddles, RAVEN, MARVEL, LogicVista, PuzzleVQA, AlgoPuzzleVQA, AI2D, RealWorldQA, MMMU, MMMU_Pro, MathVista, MathVision) on both Qwen3-VL-2B-Instruct and Qwen3-VL-2B-Thinking models.
 
-DLA fires only when the model's top-1 candidate shows zero visual grounding (`model_top1_hit <= 0.0`) AND DLA's top-1 shows positive visual grounding (`dla_top1_hit > 0.0`) AND they disagree on the predicted token. When these conditions are not met, the model's original choice is preserved.
+DLA fires whenever its selection produces a non-empty `final_candidates` set (heva.py:337), which is essentially every high-entropy step. There is no separate gating condition that compares visual attention hit_ratio of model's top-1 vs DLA's top-1.
 
 The raw dot product scoring was found to produce meaningful rankings where cosine similarity produced only noise (correlation ~0.03). The magnitude of the head output vector in the residual stream is the discriminative signal, not the angle.
+
+---
+
+## Known Issues (as of 2026-06-03)
+
+### Negative Accuracy Impact on 2B Models
+
+**Empirical finding**: DLA at threshold 1.3 produces **-4.66% accuracy** on Qwen3-VL-2B-Thinking and **-5.50%** on Qwen3-VL-2B-Instruct (averaged over 6 datasets × 100 samples). The full diagnosis is in `docs/DIAGNOSIS.md`.
+
+**Root causes identified**:
+
+1. **Threshold 1.3 fires too often** (~21% of generation steps for both models). For a 1500-token generation, DLA triggers 300+ times, each adding small perturbations that accumulate.
+
+2. **Vicious cycle**: DLA samples non-argmax structural tokens ("→", "So", "Then"). Context gets longer, model entropy rises, DLA fires again. In worst cases, model hits 8192 token limit without reaching answer (e.g., AI2D #2: base 893 tokens → DLA 8192 tokens).
+
+3. **raw_dot signal is confidence, not visual attention**: `||head_output||` correlates with model confidence on the token, not with actual visual attention. DLA's top-20 by raw_dot is essentially the same set as the model's top-20 by logit. DLA resampling adds noise to the model's already-strong language prior.
+
+4. **Task-dependent effect**: DLA helps on direct visual lookup (AI2D, RealWorldQA: +1% to +3%) but hurts on multi-step reasoning (LogicVista, MARVEL: -9% to -17%).
+
+### Mitigations
+
+- **Higher threshold** (recommended first test): 2.0 (5.7% trigger rate) or 2.5 (~2.5% trigger rate). Test scripts: `NV3-2b-thr2.0.sh`, `NV3-2b-thr2.5.sh`.
+- **Visual grounding verification** (recommended long-term fix): re-implement `verify_attention_focus_on_path` to check attention pattern of DLA's top heads, only override when DLA actually has visual evidence the model lacks.

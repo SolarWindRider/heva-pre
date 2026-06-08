@@ -424,3 +424,31 @@ outputs = model.generate(
 | `get_input_token_indices` | `metrics/inference.py` | 84-120 |
 | `_sample_with_vattn_and_entropy` | `metrics/heva.py` | — |
 | DLA intersection with CAD | `metrics/heva.py` | 324-330 |
+
+---
+
+## Known Issues (as of 2026-06-03)
+
+### Negative Accuracy Impact on 2B Models
+
+**Empirical finding**: CAD at threshold 1.3 produces **-1.66% accuracy** on Qwen3-VL-2B-Thinking and **-2.33%** on Qwen3-VL-2B-Instruct (averaged over 6 datasets × 100 samples). Less severe than DLA, but still negative. The full diagnosis is in `docs/DIAGNOSIS.md`.
+
+**Per-dataset effects**:
+
+- **Helps** (net positive): AlgoPuzzleVQA +5% (THK), MARVEL +2% (THK), RealWorldQA +1% (THK) and +3% (Instruct)
+- **Hurts** (net negative): LogicVista -7% (THK) and -12% (Instruct), PuzzleVQA -6% (THK) and -4% (Instruct)
+
+**Root causes identified**:
+
+1. **Threshold 1.3 fires too often** (~20% of generation steps for both models). For 1500-token generation, CAD triggers 300+ times, reducing the candidate pool from 20 to 10 each time.
+
+2. **Top-k//2 filter is subtractive**: when CAD keeps the wrong 10 from a top-20 that includes the correct answer, the model has no choice but to pick wrong. This is a one-way filter: once a token is dropped, it cannot be recovered.
+
+3. **"Context head" signal is weak on 2B models**: the heads that attend to visual tokens may not consistently produce the right answer. The visual signal is too weak to reliably identify the correct candidate.
+
+4. **Default threshold 5.0 is too high for THK/Instruct**: entropy rarely exceeds 2.7 in baseline. Use 1.3 (current) or 2.0+ to actually trigger CAD.
+
+### Mitigations
+
+- **Higher threshold** (recommended first test): 2.0 or 2.5. Test scripts: `NV-V-2b-thr2.0.sh`, `NV-V-2b-thr2.5.sh`.
+- **Smaller top_k** (less aggressive filtering): reduce from 20 to 10 in `ContextAwareLogitsProcessor(model, top_k=10, ...)` to keep more candidates.
